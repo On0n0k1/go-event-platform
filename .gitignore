@@ -20,8 +20,7 @@ profile.cov
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-# Go workspace file
-go.work
+# Go workspace file (go.work is committed for this monorepo; only the checksum file is ignored)
 go.work.sum
 
 # env file
