@@ -6,18 +6,18 @@ import (
 )
 
 type Config struct {
-	Port                string
-	DatabaseURL         string
-	InventoryServiceURL string
-	NatsURL             string
+	Port                     string
+	DatabaseURL              string
+	InventoryServiceGRPCAddr string
+	NatsURL                  string
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		Port:                getEnv("PORT", "8082"),
-		DatabaseURL:         os.Getenv("DATABASE_URL"),
-		InventoryServiceURL: getEnv("INVENTORY_SERVICE_URL", "http://localhost:8081"),
-		NatsURL:             getEnv("NATS_URL", "nats://localhost:4222"),
+		Port:                     getEnv("PORT", "8082"),
+		DatabaseURL:              os.Getenv("DATABASE_URL"),
+		InventoryServiceGRPCAddr: getEnv("INVENTORY_SERVICE_GRPC_ADDR", "localhost:9081"),
+		NatsURL:                  getEnv("NATS_URL", "nats://localhost:4222"),
 	}
 
 	if cfg.DatabaseURL == "" {

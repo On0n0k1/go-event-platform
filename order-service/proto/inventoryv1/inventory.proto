@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package inventory.v1;
+
+option go_package = "github.com/On0n0k1/go-event-platform/order-service/internal/inventoryv1;inventoryv1";
+
+// InventoryService is the internal, service-to-service contract for
+// reserving stock, owned by inventory-service. This is order-service's copy
+// of the same contract, kept in sync manually and regenerated independently
+// -- consistent with how this repo treats every cross-service wire contract
+// (see also the NATS OrderCreated event) as a duplicated contract rather
+// than shared Go code.
+service InventoryService {
+  rpc ReserveStock(ReserveStockRequest) returns (ReserveStockResponse);
+}
+
+message ReserveStockRequest {
+  string sku = 1;
+  int32 quantity = 2;
+}
+
+message ReserveStockResponse {
+  string sku = 1;
+  string name = 2;
+  int32 quantity = 3;
+}

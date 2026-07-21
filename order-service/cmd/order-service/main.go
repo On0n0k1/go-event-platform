@@ -50,8 +50,14 @@ func main() {
 	}
 	defer publisher.Close()
 
+	inventory, err := inventoryclient.New(cfg.InventoryServiceGRPCAddr)
+	if err != nil {
+		logger.Error("failed to create inventory-service client", "error", err)
+		os.Exit(1)
+	}
+	defer inventory.Close()
+
 	store := order.NewPostgresStore(pool)
-	inventory := inventoryclient.New(cfg.InventoryServiceURL)
 	handler := order.NewHandler(store, inventory, publisher, logger)
 
 	mux := http.NewServeMux()
@@ -64,7 +70,7 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("starting order-service", "port", cfg.Port, "inventory_service_url", cfg.InventoryServiceURL)
+		logger.Info("starting order-service", "port", cfg.Port, "inventory_service_grpc_addr", cfg.InventoryServiceGRPCAddr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server error", "error", err)
 			stop()

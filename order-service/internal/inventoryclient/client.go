@@ -1,15 +1,16 @@
 package inventoryclient
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/url"
-	"strings"
-	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+
+	inventoryv1 "github.com/On0n0k1/go-event-platform/order-service/internal/inventoryv1"
 )
 
 var (
@@ -18,54 +19,48 @@ var (
 )
 
 type Item struct {
-	SKU      string `json:"sku"`
-	Name     string `json:"name"`
-	Quantity int    `json:"quantity"`
+	SKU      string
+	Name     string
+	Quantity int
 }
 
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	conn   *grpc.ClientConn
+	client inventoryv1.InventoryServiceClient
 }
 
-func New(baseURL string) *Client {
-	return &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{Timeout: 5 * time.Second},
+func New(addr string) (*Client, error) {
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, fmt.Errorf("dial inventory-service: %w", err)
 	}
+
+	return &Client{conn: conn, client: inventoryv1.NewInventoryServiceClient(conn)}, nil
+}
+
+func (c *Client) Close() error {
+	return c.conn.Close()
 }
 
 func (c *Client) Reserve(ctx context.Context, sku string, quantity int) (Item, error) {
-	body, err := json.Marshal(map[string]int{"quantity": quantity})
+	resp, err := c.client.ReserveStock(ctx, &inventoryv1.ReserveStockRequest{
+		Sku:      sku,
+		Quantity: int32(quantity),
+	})
 	if err != nil {
-		return Item{}, fmt.Errorf("encode request: %w", err)
-	}
-
-	endpoint := c.baseURL + "/items/" + url.PathEscape(sku) + "/reserve"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return Item{}, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return Item{}, fmt.Errorf("call inventory-service: %w", err)
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		var item Item
-		if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
-			return Item{}, fmt.Errorf("decode response: %w", err)
+		switch status.Code(err) {
+		case codes.NotFound:
+			return Item{}, ErrNotFound
+		case codes.FailedPrecondition:
+			return Item{}, ErrInsufficientStock
+		default:
+			return Item{}, fmt.Errorf("call inventory-service: %w", err)
 		}
-		return item, nil
-	case http.StatusNotFound:
-		return Item{}, ErrNotFound
-	case http.StatusConflict:
-		return Item{}, ErrInsufficientStock
-	default:
-		return Item{}, fmt.Errorf("inventory-service returned status %d", resp.StatusCode)
 	}
+
+	return Item{
+		SKU:      resp.GetSku(),
+		Name:     resp.GetName(),
+		Quantity: int(resp.GetQuantity()),
+	}, nil
 }
