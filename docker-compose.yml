@@ -31,6 +31,18 @@ services:
       timeout: 3s
       retries: 5
 
+  nats:
+    image: nats:2-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/varz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   inventory-service:
     build:
       context: ./inventory-service
@@ -55,6 +67,7 @@ services:
       PORT: "8082"
       DATABASE_URL: postgres://orders:orders@order-db:5432/orders?sslmode=disable
       INVENTORY_SERVICE_URL: http://inventory-service:8081
+      NATS_URL: nats://nats:4222
     ports:
       - "8082:8082"
     depends_on:
@@ -62,8 +75,44 @@ services:
         condition: service_healthy
       inventory-service:
         condition: service_healthy
+      nats:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8082/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  notification-service:
+    build:
+      context: ./notification-service
+    environment:
+      PORT: "8083"
+      NATS_URL: nats://nats:4222
+    ports:
+      - "8083:8083"
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8083/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  analytics-service:
+    build:
+      context: ./analytics-service
+    environment:
+      PORT: "8084"
+      NATS_URL: nats://nats:4222
+    ports:
+      - "8084:8084"
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8084/healthz"]
       interval: 5s
       timeout: 3s
       retries: 5

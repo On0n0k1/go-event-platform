@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        module: [api-gateway, order-service, inventory-service]
+        module: [api-gateway, order-service, inventory-service, notification-service, analytics-service]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
