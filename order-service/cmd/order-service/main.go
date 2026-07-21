@@ -12,6 +12,7 @@ import (
 
 	"github.com/On0n0k1/go-event-platform/order-service/internal/config"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/db"
+	"github.com/On0n0k1/go-event-platform/order-service/internal/events"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/httpx"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/inventoryclient"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/order"
@@ -42,9 +43,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	publisher, err := events.NewPublisher(ctx, cfg.NatsURL)
+	if err != nil {
+		logger.Error("failed to connect to nats", "error", err)
+		os.Exit(1)
+	}
+	defer publisher.Close()
+
 	store := order.NewPostgresStore(pool)
 	inventory := inventoryclient.New(cfg.InventoryServiceURL)
-	handler := order.NewHandler(store, inventory, logger)
+	handler := order.NewHandler(store, inventory, publisher, logger)
 
 	mux := http.NewServeMux()
 	handler.Register(mux)

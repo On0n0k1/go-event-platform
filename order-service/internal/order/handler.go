@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/On0n0k1/go-event-platform/order-service/internal/events"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/httpx"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/inventoryclient"
 )
@@ -18,14 +19,19 @@ type InventoryReserver interface {
 	Reserve(ctx context.Context, sku string, quantity int) (inventoryclient.Item, error)
 }
 
+type EventPublisher interface {
+	PublishOrderCreated(ctx context.Context, evt events.OrderCreated) error
+}
+
 type Handler struct {
 	store     Store
 	inventory InventoryReserver
+	events    EventPublisher
 	log       *slog.Logger
 }
 
-func NewHandler(store Store, inventory InventoryReserver, log *slog.Logger) *Handler {
-	return &Handler{store: store, inventory: inventory, log: log}
+func NewHandler(store Store, inventory InventoryReserver, events EventPublisher, log *slog.Logger) *Handler {
+	return &Handler{store: store, inventory: inventory, events: events, log: log}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -75,6 +81,20 @@ func (h *Handler) createOrder(w http.ResponseWriter, r *http.Request) {
 		h.log.Error("create order failed", "sku", req.SKU, "error", err)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
+	}
+
+	// Best-effort: the order is already durably persisted above, so a publish
+	// failure here is logged but does not fail the request. A transactional
+	// outbox would close this gap; out of scope for this MVP.
+	evt := events.OrderCreated{
+		OrderID:   o.ID,
+		SKU:       o.SKU,
+		Quantity:  o.Quantity,
+		Status:    o.Status,
+		CreatedAt: o.CreatedAt,
+	}
+	if err := h.events.PublishOrderCreated(r.Context(), evt); err != nil {
+		h.log.Error("publish order created event failed", "order_id", o.ID, "error", err)
 	}
 
 	httpx.WriteJSON(w, http.StatusCreated, o)

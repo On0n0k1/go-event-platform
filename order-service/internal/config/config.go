@@ -9,6 +9,7 @@ type Config struct {
 	Port                string
 	DatabaseURL         string
 	InventoryServiceURL string
+	NatsURL             string
 }
 
 func Load() (Config, error) {
@@ -16,6 +17,7 @@ func Load() (Config, error) {
 		Port:                getEnv("PORT", "8082"),
 		DatabaseURL:         os.Getenv("DATABASE_URL"),
 		InventoryServiceURL: getEnv("INVENTORY_SERVICE_URL", "http://localhost:8081"),
+		NatsURL:             getEnv("NATS_URL", "nats://localhost:4222"),
 	}
 
 	if cfg.DatabaseURL == "" {
