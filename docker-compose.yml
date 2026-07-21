@@ -1,0 +1,88 @@
+services:
+  inventory-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: inventory
+      POSTGRES_PASSWORD: inventory
+      POSTGRES_DB: inventory
+    ports:
+      - "55432:5432"
+    volumes:
+      - inventory-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inventory"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  order-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: orders
+      POSTGRES_DB: orders
+    ports:
+      - "55433:5432"
+    volumes:
+      - order-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  inventory-service:
+    build:
+      context: ./inventory-service
+    environment:
+      PORT: "8081"
+      DATABASE_URL: postgres://inventory:inventory@inventory-db:5432/inventory?sslmode=disable
+    ports:
+      - "8081:8081"
+    depends_on:
+      inventory-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  order-service:
+    build:
+      context: ./order-service
+    environment:
+      PORT: "8082"
+      DATABASE_URL: postgres://orders:orders@order-db:5432/orders?sslmode=disable
+      INVENTORY_SERVICE_URL: http://inventory-service:8081
+    ports:
+      - "8082:8082"
+    depends_on:
+      order-db:
+        condition: service_healthy
+      inventory-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api-gateway:
+    build:
+      context: ./api-gateway
+    environment:
+      PORT: "8080"
+      ORDER_SERVICE_URL: http://order-service:8082
+      INVENTORY_SERVICE_URL: http://inventory-service:8081
+    ports:
+      - "8080:8080"
+    depends_on:
+      order-service:
+        condition: service_healthy
+      inventory-service:
+        condition: service_healthy
+
+volumes:
+  inventory-db-data:
+  order-db-data:
