@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	gatewayURL  = "http://localhost:8080"
-	projectName = "go-event-platform-it"
+	gatewayURL   = "http://localhost:8080"
+	analyticsURL = "http://localhost:8084"
+	projectName  = "go-event-platform-it"
 )
 
 func TestMain(m *testing.M) {
@@ -70,6 +71,11 @@ type order struct {
 	SKU      string `json:"sku"`
 	Quantity int    `json:"quantity"`
 	Status   string `json:"status"`
+}
+
+type stats struct {
+	OrdersCount           int `json:"orders_count"`
+	TotalQuantityReserved int `json:"total_quantity_reserved"`
 }
 
 func getItem(t *testing.T, sku string) item {
@@ -144,6 +150,26 @@ func getOrder(t *testing.T, id string) order {
 	return o
 }
 
+func getStats(t *testing.T) stats {
+	t.Helper()
+
+	resp, err := http.Get(analyticsURL + "/stats")
+	if err != nil {
+		t.Fatalf("get stats: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get stats status = %d", resp.StatusCode)
+	}
+
+	var s stats
+	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+		t.Fatalf("decode stats: %v", err)
+	}
+	return s
+}
+
 func TestOrderFlow(t *testing.T) {
 	waitForHealthy(t, gatewayURL+"/healthz", 60*time.Second)
 
@@ -182,5 +208,30 @@ func TestOrderFlowInsufficientStockDoesNotReserve(t *testing.T) {
 	after := getItem(t, "SKU-002")
 	if after.Quantity != before.Quantity {
 		t.Fatalf("stock changed after rejected order: before=%d after=%d", before.Quantity, after.Quantity)
+	}
+}
+
+// TestOrderCreatedEventReachesAnalytics confirms the asynchronous path: an
+// order created through the gateway results in an OrderCreated event
+// published to NATS JetStream, consumed independently by analytics-service,
+// with no direct HTTP call between order-service and analytics-service.
+func TestOrderCreatedEventReachesAnalytics(t *testing.T) {
+	waitForHealthy(t, gatewayURL+"/healthz", 60*time.Second)
+	waitForHealthy(t, analyticsURL+"/healthz", 60*time.Second)
+
+	before := getStats(t)
+
+	o := createOrder(t, "SKU-001", 2)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		after := getStats(t)
+		if after.OrdersCount == before.OrdersCount+1 && after.TotalQuantityReserved == before.TotalQuantityReserved+o.Quantity {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("analytics stats did not reflect order %s within timeout: before=%+v after=%+v", o.ID, before, after)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
