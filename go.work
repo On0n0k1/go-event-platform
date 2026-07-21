@@ -1,8 +1,10 @@
 go 1.26.5
 
 use (
+	./analytics-service
 	./api-gateway
 	./integration
 	./inventory-service
+	./notification-service
 	./order-service
 )
