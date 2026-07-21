@@ -4,16 +4,20 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/config"
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/db"
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/httpx"
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/inventory"
+	inventoryv1 "github.com/On0n0k1/go-event-platform/inventory-service/internal/inventoryv1"
 )
 
 func main() {
@@ -42,8 +46,8 @@ func main() {
 	}
 
 	store := inventory.NewPostgresStore(pool)
-	handler := inventory.NewHandler(store, logger)
 
+	handler := inventory.NewHandler(store, logger)
 	mux := http.NewServeMux()
 	handler.Register(mux)
 	mux.HandleFunc("GET /healthz", httpx.HealthHandler(pool))
@@ -51,6 +55,15 @@ func main() {
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
 		Handler: httpx.LoggingMiddleware(logger)(mux),
+	}
+
+	grpcServer := grpc.NewServer()
+	inventoryv1.RegisterInventoryServiceServer(grpcServer, inventory.NewGRPCServer(store, logger))
+
+	grpcListener, err := net.Listen("tcp", ":"+cfg.GRPCPort)
+	if err != nil {
+		logger.Error("failed to listen for grpc", "error", err)
+		os.Exit(1)
 	}
 
 	go func() {
@@ -61,8 +74,18 @@ func main() {
 		}
 	}()
 
+	go func() {
+		logger.Info("starting inventory-service grpc server", "port", cfg.GRPCPort)
+		if err := grpcServer.Serve(grpcListener); err != nil {
+			logger.Error("grpc server error", "error", err)
+			stop()
+		}
+	}()
+
 	<-ctx.Done()
 	logger.Info("shutting down inventory-service")
+
+	grpcServer.GracefulStop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

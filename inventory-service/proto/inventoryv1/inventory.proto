@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package inventory.v1;
+
+option go_package = "github.com/On0n0k1/go-event-platform/inventory-service/internal/inventoryv1;inventoryv1";
+
+// InventoryService is the internal, service-to-service contract for
+// reserving stock. External/public reads of stock still go over the
+// existing REST API (GET /items/{sku}); this is only for the
+// order-service -> inventory-service reservation call.
+service InventoryService {
+  rpc ReserveStock(ReserveStockRequest) returns (ReserveStockResponse);
+}
+
+message ReserveStockRequest {
+  string sku = 1;
+  int32 quantity = 2;
+}
+
+message ReserveStockResponse {
+  string sku = 1;
+  string name = 2;
+  int32 quantity = 3;
+}

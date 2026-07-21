@@ -7,12 +7,14 @@ import (
 
 type Config struct {
 	Port        string
+	GRPCPort    string
 	DatabaseURL string
 }
 
 func Load() (Config, error) {
 	cfg := Config{
 		Port:        getEnv("PORT", "8081"),
+		GRPCPort:    getEnv("GRPC_PORT", "9081"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 	}
 
