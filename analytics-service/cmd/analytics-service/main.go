@@ -17,6 +17,7 @@ import (
 	"github.com/On0n0k1/go-event-platform/analytics-service/internal/config"
 	"github.com/On0n0k1/go-event-platform/analytics-service/internal/events"
 	"github.com/On0n0k1/go-event-platform/analytics-service/internal/httpx"
+	"github.com/On0n0k1/go-event-platform/analytics-service/internal/metrics"
 	"github.com/On0n0k1/go-event-platform/analytics-service/internal/tracing"
 )
 
@@ -56,10 +57,11 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.HealthHandler(subscriber.Conn()))
 	mux.HandleFunc("GET /stats", analytics.StatsHandler(stats))
+	mux.Handle("GET /metrics", metrics.Handler())
 
-	tracedHandler := otelhttp.NewHandler(httpx.LoggingMiddleware(logger)(mux), "analytics-service",
+	tracedHandler := otelhttp.NewHandler(httpx.LoggingMiddleware(logger)(metrics.HTTPMiddleware(mux)), "analytics-service",
 		otelhttp.WithFilter(func(r *http.Request) bool {
-			return r.URL.Path != "/healthz"
+			return r.URL.Path != "/healthz" && r.URL.Path != "/metrics"
 		}),
 	)
 

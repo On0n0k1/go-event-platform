@@ -58,12 +58,15 @@ func (h *Handler) createOrder(w http.ResponseWriter, r *http.Request) {
 	_, err := h.inventory.Reserve(r.Context(), req.SKU, req.Quantity)
 	switch {
 	case errors.Is(err, inventoryclient.ErrNotFound):
+		stockReservationFailuresTotal.WithLabelValues("not_found").Inc()
 		httpx.WriteError(w, http.StatusNotFound, "item not found")
 		return
 	case errors.Is(err, inventoryclient.ErrInsufficientStock):
+		stockReservationFailuresTotal.WithLabelValues("insufficient_stock").Inc()
 		httpx.WriteError(w, http.StatusConflict, "insufficient stock")
 		return
 	case err != nil:
+		stockReservationFailuresTotal.WithLabelValues("unavailable").Inc()
 		h.log.Error("reserve stock failed", "sku", req.SKU, "error", err)
 		httpx.WriteError(w, http.StatusBadGateway, "inventory-service unavailable")
 		return
@@ -96,6 +99,8 @@ func (h *Handler) createOrder(w http.ResponseWriter, r *http.Request) {
 	if err := h.events.PublishOrderCreated(r.Context(), evt); err != nil {
 		h.log.Error("publish order created event failed", "order_id", o.ID, "error", err)
 	}
+
+	ordersCreatedTotal.Inc()
 
 	httpx.WriteJSON(w, http.StatusCreated, o)
 }

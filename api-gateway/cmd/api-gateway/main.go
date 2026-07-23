@@ -14,6 +14,7 @@ import (
 
 	"github.com/On0n0k1/go-event-platform/api-gateway/internal/config"
 	"github.com/On0n0k1/go-event-platform/api-gateway/internal/httpx"
+	"github.com/On0n0k1/go-event-platform/api-gateway/internal/metrics"
 	"github.com/On0n0k1/go-event-platform/api-gateway/internal/proxy"
 	"github.com/On0n0k1/go-event-platform/api-gateway/internal/tracing"
 )
@@ -54,13 +55,14 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.HealthHandler)
+	mux.Handle("GET /metrics", metrics.Handler())
 	mux.Handle("POST /orders", orderProxy)
 	mux.Handle("GET /orders/{id}", orderProxy)
 	mux.Handle("GET /items/{sku}", inventoryProxy)
 
-	tracedHandler := otelhttp.NewHandler(httpx.LoggingMiddleware(logger)(mux), "api-gateway",
+	tracedHandler := otelhttp.NewHandler(httpx.LoggingMiddleware(logger)(metrics.HTTPMiddleware(mux)), "api-gateway",
 		otelhttp.WithFilter(func(r *http.Request) bool {
-			return r.URL.Path != "/healthz"
+			return r.URL.Path != "/healthz" && r.URL.Path != "/metrics"
 		}),
 	)
 

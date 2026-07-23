@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	inventoryv1 "github.com/On0n0k1/go-event-platform/order-service/internal/inventoryv1"
+	"github.com/On0n0k1/go-event-platform/order-service/internal/metrics"
 )
 
 var (
@@ -34,6 +35,7 @@ func New(addr string) (*Client, error) {
 	conn, err := grpc.NewClient(addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+		grpc.WithUnaryInterceptor(metrics.UnaryClientInterceptor()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("dial inventory-service: %w", err)

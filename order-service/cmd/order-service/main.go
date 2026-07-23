@@ -17,6 +17,7 @@ import (
 	"github.com/On0n0k1/go-event-platform/order-service/internal/events"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/httpx"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/inventoryclient"
+	"github.com/On0n0k1/go-event-platform/order-service/internal/metrics"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/order"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/tracing"
 )
@@ -79,10 +80,11 @@ func main() {
 	mux := http.NewServeMux()
 	handler.Register(mux)
 	mux.HandleFunc("GET /healthz", httpx.HealthHandler(pool))
+	mux.Handle("GET /metrics", metrics.Handler())
 
-	tracedHandler := otelhttp.NewHandler(httpx.LoggingMiddleware(logger)(mux), "order-service",
+	tracedHandler := otelhttp.NewHandler(httpx.LoggingMiddleware(logger)(metrics.HTTPMiddleware(mux)), "order-service",
 		otelhttp.WithFilter(func(r *http.Request) bool {
-			return r.URL.Path != "/healthz"
+			return r.URL.Path != "/healthz" && r.URL.Path != "/metrics"
 		}),
 	)
 

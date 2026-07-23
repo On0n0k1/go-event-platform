@@ -5,10 +5,17 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/redis/go-redis/v9"
 )
 
 const cacheTTL = 30 * time.Second
+
+var cacheResultTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "inventory_item_cache_result_total",
+	Help: "Cache-aside results for GetItem, labeled by result (hit/miss).",
+}, []string{"result"})
 
 // CachingStore wraps Store with a cache-aside layer over GetItem. Reads that
 // hit the cache skip Postgres entirely; ReserveStock always invalidates the
@@ -34,9 +41,12 @@ func (s *CachingStore) GetItem(ctx context.Context, sku string) (Item, error) {
 	if cached, err := s.redis.Get(ctx, key).Result(); err == nil {
 		var item Item
 		if err := json.Unmarshal([]byte(cached), &item); err == nil {
+			cacheResultTotal.WithLabelValues("hit").Inc()
 			return item, nil
 		}
 	}
+
+	cacheResultTotal.WithLabelValues("miss").Inc()
 
 	item, err := s.next.GetItem(ctx, sku)
 	if err != nil {

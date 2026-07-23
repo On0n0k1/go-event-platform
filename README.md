@@ -3,9 +3,10 @@
 A small Go microservices showcase: an API gateway routing to an order service, which
 reserves stock from a Redis-cached inventory service over gRPC and publishes an event
 that notification and analytics services consume asynchronously over NATS — all traced
-end to end with OpenTelemetry into Jaeger. Built incrementally as a demonstrable MVP,
-with room to grow into a fuller event-driven platform (metrics, dashboards, Kubernetes)
-on top of these foundations.
+end to end with OpenTelemetry into Jaeger, and all exposing Prometheus metrics on a
+provisioned Grafana dashboard. Built incrementally as a demonstrable MVP, with room to
+grow into a fuller event-driven platform (Kubernetes and beyond) on top of these
+foundations.
 
 ## Architecture
 
@@ -42,7 +43,8 @@ on top of these foundations.
 │   :8083            │  │   :8084           │
 └──────────────────┘  └──────────────────┘
 
-  (all five services also export OTLP traces to jaeger :4317, UI on :16686)
+  (all five services also export OTLP traces to jaeger :4317, UI on :16686,
+   and expose /metrics for prometheus :9090, visualized in grafana :3000)
 ```
 
 - **api-gateway** is a thin reverse proxy — a single entry point that routes requests
@@ -78,6 +80,15 @@ on top of these foundations.
   order produces one trace spanning all five services, including the async fan-out to
   both NATS consumers. Every request/event log line also carries the same `trace_id`,
   so logs and traces correlate directly.
+- Every service exposes `GET /metrics` for **Prometheus** to scrape (`prometheus/client_golang`,
+  not OTel's metrics SDK — a lighter, more common pairing than routing metrics through OTel
+  too). HTTP and gRPC request count/duration are recorded automatically; a few domain
+  metrics are recorded by hand where they say something the transport-level ones can't
+  (`orders_created_total`, `stock_reservation_failures_total{reason}`,
+  `inventory_item_cache_result_total{result}`, `notifications_sent_total`,
+  `analytics_orders_recorded_total`). A provisioned **Grafana** dashboard (Prometheus +
+  Jaeger datasources, both checked into the repo) is available immediately on startup —
+  no manual clicking required.
 
 ## Services
 
@@ -94,6 +105,7 @@ on top of these foundations.
 | Method | Path            | Proxies to          |
 |--------|-----------------|----------------------|
 | GET    | `/healthz`      | (local liveness)     |
+| GET    | `/metrics`      | (local Prometheus metrics) |
 | POST   | `/orders`       | order-service        |
 | GET    | `/orders/{id}`  | order-service        |
 | GET    | `/items/{sku}`  | inventory-service     |
@@ -103,6 +115,7 @@ on top of these foundations.
 | Method | Path            | Description                                          |
 |--------|-----------------|-------------------------------------------------------|
 | GET    | `/healthz`      | Liveness + DB connectivity check                       |
+| GET    | `/metrics`      | Prometheus metrics                                      |
 | POST   | `/orders`       | `{"sku": "...", "quantity": N}` → reserves stock, creates order |
 | GET    | `/orders/{id}`  | Fetch an order by ID                                    |
 
@@ -113,6 +126,7 @@ REST (port 8081, external reads):
 | Method | Path            | Description                       |
 |--------|-----------------|--------------------------------------|
 | GET    | `/healthz`      | Liveness + DB connectivity check       |
+| GET    | `/metrics`      | Prometheus metrics                      |
 | GET    | `/items/{sku}`  | Fetch current stock for a SKU (Redis cache-aside, 30s TTL) |
 
 gRPC (port 9081, internal only — see `proto/inventoryv1/inventory.proto`):
@@ -128,6 +142,7 @@ Seed data (inserted on startup): `SKU-001` (Widget, qty 100), `SKU-002` (Gadget,
 | Method | Path       | Description                              |
 |--------|------------|--------------------------------------------|
 | GET    | `/healthz` | Liveness + NATS connection check             |
+| GET    | `/metrics` | Prometheus metrics                             |
 
 No other HTTP surface — it only consumes `orders.created` events and logs a simulated
 notification (no real email/SMS integration; that's out of scope for this MVP).
@@ -137,6 +152,7 @@ notification (no real email/SMS integration; that's out of scope for this MVP).
 | Method | Path       | Description                                             |
 |--------|------------|-------------------------------------------------------------|
 | GET    | `/healthz` | Liveness + NATS connection check                              |
+| GET    | `/metrics` | Prometheus metrics                                             |
 | GET    | `/stats`   | `{"orders_count": N, "total_quantity_reserved": N}` running totals |
 
 Stats are in-memory and reset on restart; a durable store is a reasonable future upgrade.
@@ -203,6 +219,30 @@ show `api-gateway → order-service → inventory-service` (gRPC) plus
 `order-service → notification-service` and `order-service → analytics-service` (NATS),
 all under one trace ID.
 
+### Metrics and dashboards
+
+Each service has an `internal/metrics` package (duplicated, like `tracing/`) built on
+`prometheus/client_golang`:
+
+- `HTTPMiddleware` records `http_requests_total` / `http_request_duration_seconds`,
+  labeled by method, route pattern, and status. It reads `r.Pattern` (set by `net/http`'s
+  `ServeMux` once routing completes, e.g. `GET /items/{sku}`) rather than the raw URL, so
+  parameterized routes don't create unbounded label cardinality.
+- order-service and inventory-service additionally have hand-rolled gRPC unary
+  interceptors (`grpc_client_requests_total` / `grpc_server_requests_total`, both with
+  duration histograms) — `grpc-ecosystem`'s Prometheus middleware pulled in an
+  incompatible old `genproto`, so this was simpler to write directly than to fight.
+- `/metrics` is registered like any other route, then excluded from the same
+  `otelhttp` filter that already skips `/healthz`, so scrapes don't spam every trace.
+
+A `prometheus` container scrapes all five services' `/metrics` every 5s
+(`observability/prometheus/prometheus.yml`), and a `grafana` container comes up with
+Prometheus and Jaeger already added as datasources and a dashboard already loaded
+(`observability/grafana/`, provisioned via mounted volumes — nothing to click through
+manually). Open http://localhost:3000 (anonymous access enabled, no login) for request
+rate/error-rate/p95-latency per service, gRPC request rate, orders-created rate, stock
+reservation failures by reason, and the inventory cache hit ratio.
+
 ## Repo layout
 
 This is a multi-module monorepo tied together with a Go workspace (`go.work`). Each
@@ -218,6 +258,7 @@ go-event-platform/
 ├── notification-service/   # NATS consumer, simulated notifications
 ├── analytics-service/      # NATS consumer, in-memory stats + /stats endpoint
 ├── integration/            # end-to-end tests against the real docker-compose stack
+├── observability/          # prometheus.yml + grafana provisioning (datasources, dashboard)
 ├── docker-compose.yml
 └── .github/workflows/ci.yml
 ```
@@ -225,7 +266,7 @@ go-event-platform/
 Each service follows the same internal shape (fields vary — e.g. only services with a
 database have `db/`, only order/inventory-service have `proto/`+`inventoryv1/`, only
 inventory-service has `cache/`, only services touching NATS have `events/`;
-`tracing/` is the one package every service has):
+`tracing/` and `metrics/` are the two packages every service has):
 
 ```
 <service>/
@@ -238,6 +279,7 @@ inventory-service has `cache/`, only services touching NATS have `events/`;
 │   ├── events/              # NATS JetStream publisher/subscriber (order/notification/analytics)
 │   ├── httpx/               # JSON helpers, logging middleware (+ trace_id), healthz
 │   ├── inventoryv1/          # generated gRPC code (order/inventory-service only)
+│   ├── metrics/              # Prometheus HTTP middleware (+ gRPC interceptors on order/inventory-service)
 │   ├── tracing/              # OTel TracerProvider setup/shutdown (every service)
 │   └── <domain>/            # models, store (+ CachingStore decorator), HTTP/gRPC handlers
 └── Dockerfile
@@ -250,8 +292,8 @@ inventory-service has `cache/`, only services touching NATS have `events/`;
 
 ## Running locally
 
-The whole stack (both Postgres instances, NATS, Redis, Jaeger, and all five services)
-runs with one command:
+The whole stack (both Postgres instances, NATS, Redis, Jaeger, Prometheus, Grafana, and
+all five services) runs with one command:
 
 ```bash
 docker compose up --build
@@ -295,6 +337,10 @@ docker compose logs notification-service
 Then open http://localhost:16686 (Jaeger UI), pick any of the five services, and find
 the trace for the order above — it should show the full path through every service,
 including the async hop to notification-service and analytics-service.
+
+Or open http://localhost:3000 (Grafana, no login needed) for the "go-event-platform
+overview" dashboard — place a few more orders and watch the request rate / latency /
+orders-created panels move.
 
 Tear down (including volumes):
 
@@ -359,12 +405,10 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
 This is intentionally the simplest slice that demonstrates the architecture end to end.
 Planned evolution, roughly in order:
 
-1. Add Prometheus metrics + Grafana dashboards (tracing is done; this is the rest of the
-   original observability milestone).
-2. Add Kubernetes manifests/Helm charts alongside the existing Compose setup.
-3. Retry with exponential backoff on inter-service calls (including the order→inventory
+1. Add Kubernetes manifests/Helm charts alongside the existing Compose setup.
+2. Retry with exponential backoff on inter-service calls (including the order→inventory
    gRPC call, which today fails a request immediately if inventory-service is down).
-4. Transactional outbox for order-service's event publish, so a NATS publish failure
+3. Transactional outbox for order-service's event publish, so a NATS publish failure
    can't silently diverge from the persisted order (currently best-effort/logged only).
-5. TLS for the gRPC connection between order-service and inventory-service (currently
+4. TLS for the gRPC connection between order-service and inventory-service (currently
    plaintext/insecure credentials, fine for local Compose but not production).

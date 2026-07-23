@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: api-gateway
+    static_configs:
+      - targets: ["api-gateway:8080"]
+
+  - job_name: order-service
+    static_configs:
+      - targets: ["order-service:8082"]
+
+  - job_name: inventory-service
+    static_configs:
+      - targets: ["inventory-service:8081"]
+
+  - job_name: notification-service
+    static_configs:
+      - targets: ["notification-service:8083"]
+
+  - job_name: analytics-service
+    static_configs:
+      - targets: ["analytics-service:8084"]

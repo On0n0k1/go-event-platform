@@ -21,6 +21,7 @@ import (
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/httpx"
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/inventory"
 	inventoryv1 "github.com/On0n0k1/go-event-platform/inventory-service/internal/inventoryv1"
+	"github.com/On0n0k1/go-event-platform/inventory-service/internal/metrics"
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/tracing"
 )
 
@@ -75,10 +76,11 @@ func main() {
 	mux := http.NewServeMux()
 	handler.Register(mux)
 	mux.HandleFunc("GET /healthz", httpx.HealthHandler(pool))
+	mux.Handle("GET /metrics", metrics.Handler())
 
-	tracedHandler := otelhttp.NewHandler(httpx.LoggingMiddleware(logger)(mux), "inventory-service",
+	tracedHandler := otelhttp.NewHandler(httpx.LoggingMiddleware(logger)(metrics.HTTPMiddleware(mux)), "inventory-service",
 		otelhttp.WithFilter(func(r *http.Request) bool {
-			return r.URL.Path != "/healthz"
+			return r.URL.Path != "/healthz" && r.URL.Path != "/metrics"
 		}),
 	)
 
@@ -87,7 +89,10 @@ func main() {
 		Handler: tracedHandler,
 	}
 
-	grpcServer := grpc.NewServer(grpc.StatsHandler(otelgrpc.NewServerHandler()))
+	grpcServer := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		grpc.UnaryInterceptor(metrics.UnaryServerInterceptor()),
+	)
 	inventoryv1.RegisterInventoryServiceServer(grpcServer, inventory.NewGRPCServer(store, logger))
 
 	grpcListener, err := net.Listen("tcp", ":"+cfg.GRPCPort)
