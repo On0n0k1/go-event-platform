@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 type statusRecorder struct {
@@ -24,12 +26,17 @@ func LoggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(rec, r)
 
-			logger.Info("request handled",
+			attrs := []any{
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", rec.status,
 				"duration_ms", time.Since(start).Milliseconds(),
-			)
+			}
+			if sc := trace.SpanContextFromContext(r.Context()); sc.IsValid() {
+				attrs = append(attrs, "trace_id", sc.TraceID().String())
+			}
+
+			logger.Info("request handled", attrs...)
 		})
 	}
 }

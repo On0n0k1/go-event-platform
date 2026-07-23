@@ -8,7 +8,11 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 )
+
+var tracer = otel.Tracer("order-service/events")
 
 const (
 	StreamName     = "ORDERS"
@@ -59,12 +63,18 @@ func (p *Publisher) Close() {
 }
 
 func (p *Publisher) PublishOrderCreated(ctx context.Context, evt OrderCreated) error {
+	ctx, span := tracer.Start(ctx, "publish "+SubjectCreated, trace.WithSpanKind(trace.SpanKindProducer))
+	defer span.End()
+
 	payload, err := json.Marshal(evt)
 	if err != nil {
 		return fmt.Errorf("encode event: %w", err)
 	}
 
-	if _, err := p.js.Publish(ctx, SubjectCreated, payload); err != nil {
+	msg := &nats.Msg{Subject: SubjectCreated, Data: payload, Header: nats.Header{}}
+	otel.GetTextMapPropagator().Inject(ctx, natsHeaderCarrier(msg.Header))
+
+	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
 		return fmt.Errorf("publish event: %w", err)
 	}
 

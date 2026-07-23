@@ -2,9 +2,10 @@
 
 A small Go microservices showcase: an API gateway routing to an order service, which
 reserves stock from a Redis-cached inventory service over gRPC and publishes an event
-that notification and analytics services consume asynchronously over NATS. Built
-incrementally as a demonstrable MVP, with room to grow into a fuller event-driven
-platform (observability, Kubernetes) on top of these foundations.
+that notification and analytics services consume asynchronously over NATS — all traced
+end to end with OpenTelemetry into Jaeger. Built incrementally as a demonstrable MVP,
+with room to grow into a fuller event-driven platform (metrics, dashboards, Kubernetes)
+on top of these foundations.
 
 ## Architecture
 
@@ -40,6 +41,8 @@ platform (observability, Kubernetes) on top of these foundations.
 │ notification-svc   │  │ analytics-svc     │
 │   :8083            │  │   :8084           │
 └──────────────────┘  └──────────────────┘
+
+  (all five services also export OTLP traces to jaeger :4317, UI on :16686)
 ```
 
 - **api-gateway** is a thin reverse proxy — a single entry point that routes requests
@@ -67,6 +70,14 @@ platform (observability, Kubernetes) on top of these foundations.
   delivered once it reconnects (not lost, unlike plain pub/sub).
 - Each service with a datastore has its **own Postgres database** — no shared schema,
   no cross-service DB access.
+- Every service is instrumented with **OpenTelemetry**, exporting to a **Jaeger**
+  container. Trace context propagates automatically across REST (via `otelhttp`, both
+  server and — for the gateway's proxy — client side) and gRPC (via `otelgrpc`), and by
+  hand across the NATS hop (order-service injects trace context into message headers on
+  publish; notification-service/analytics-service extract it on consume), so a single
+  order produces one trace spanning all five services, including the async fan-out to
+  both NATS consumers. Every request/event log line also carries the same `trace_id`,
+  so logs and traces correlate directly.
 
 ## Services
 
@@ -167,6 +178,31 @@ Requires `protoc` plus the `protoc-gen-go`/`protoc-gen-go-grpc` plugins on `PATH
 (`go install google.golang.org/protobuf/cmd/protoc-gen-go@latest` and
 `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`).
 
+### Tracing
+
+Each service has an `internal/tracing` package (identical across services, like
+`httpx` — plain infrastructure, not a wire contract, so it's duplicated rather than
+shared) that sets up a global OTel `TracerProvider` exporting via OTLP/gRPC to Jaeger,
+and registers the W3C `traceparent` propagator. From there:
+
+- **REST**: each service's HTTP handler is wrapped with `otelhttp.NewHandler` (server
+  spans), filtered to skip `/healthz` so healthchecks don't spam every trace. api-gateway
+  additionally instruments its reverse proxy's outbound `Transport` with
+  `otelhttp.NewTransport`, so the span it creates as a server is what actually gets
+  propagated downstream — not just whatever headers the original client happened to send.
+- **gRPC**: order-service's client and inventory-service's server both use `otelgrpc`
+  stats handlers, which propagate context automatically over gRPC metadata.
+- **NATS**: no official OTel instrumentation exists for `nats.go`, so this is manual —
+  order-service injects trace context into NATS message headers on publish
+  (`natsHeaderCarrier`, an adapter over `nats.Header`), and notification-service /
+  analytics-service extract it on consume before starting their own span. This is what
+  keeps a single order's trace connected across the async fan-out to both consumers.
+
+View traces at http://localhost:16686 after placing an order — a single trace should
+show `api-gateway → order-service → inventory-service` (gRPC) plus
+`order-service → notification-service` and `order-service → analytics-service` (NATS),
+all under one trace ID.
+
 ## Repo layout
 
 This is a multi-module monorepo tied together with a Go workspace (`go.work`). Each
@@ -188,7 +224,8 @@ go-event-platform/
 
 Each service follows the same internal shape (fields vary — e.g. only services with a
 database have `db/`, only order/inventory-service have `proto/`+`inventoryv1/`, only
-inventory-service has `cache/`, only services touching NATS have `events/`):
+inventory-service has `cache/`, only services touching NATS have `events/`;
+`tracing/` is the one package every service has):
 
 ```
 <service>/
@@ -199,8 +236,9 @@ inventory-service has `cache/`, only services touching NATS have `events/`):
 │   ├── config/             # env-var configuration
 │   ├── db/                 # Postgres pool + embedded schema (order/inventory-service only)
 │   ├── events/              # NATS JetStream publisher/subscriber (order/notification/analytics)
-│   ├── httpx/               # JSON helpers, logging middleware, healthz
+│   ├── httpx/               # JSON helpers, logging middleware (+ trace_id), healthz
 │   ├── inventoryv1/          # generated gRPC code (order/inventory-service only)
+│   ├── tracing/              # OTel TracerProvider setup/shutdown (every service)
 │   └── <domain>/            # models, store (+ CachingStore decorator), HTTP/gRPC handlers
 └── Dockerfile
 ```
@@ -212,8 +250,8 @@ inventory-service has `cache/`, only services touching NATS have `events/`):
 
 ## Running locally
 
-The whole stack (both Postgres instances, NATS, Redis, and all five services) runs with
-one command:
+The whole stack (both Postgres instances, NATS, Redis, Jaeger, and all five services)
+runs with one command:
 
 ```bash
 docker compose up --build
@@ -254,6 +292,10 @@ curl http://localhost:8084/stats
 docker compose logs notification-service
 ```
 
+Then open http://localhost:16686 (Jaeger UI), pick any of the five services, and find
+the trace for the order above — it should show the full path through every service,
+including the async hop to notification-service and analytics-service.
+
 Tear down (including volumes):
 
 ```bash
@@ -271,11 +313,12 @@ DATABASE_URL="postgres://inventory:inventory@localhost:55432/inventory?sslmode=d
 PORT=8081 \
 GRPC_PORT=9081 \
 REDIS_ADDR=localhost:6379 \
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 \
 go run ./cmd/inventory-service
 ```
 
-(Use `docker compose up inventory-db order-db nats redis -d` first to get local
-Postgres, NATS, and Redis instances on the ports above.)
+(Use `docker compose up inventory-db order-db nats redis jaeger -d` first to get local
+Postgres, NATS, Redis, and Jaeger instances on the ports above.)
 
 ## Testing
 
@@ -316,7 +359,8 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
 This is intentionally the simplest slice that demonstrates the architecture end to end.
 Planned evolution, roughly in order:
 
-1. Add OpenTelemetry tracing + Prometheus metrics + Grafana dashboards.
+1. Add Prometheus metrics + Grafana dashboards (tracing is done; this is the rest of the
+   original observability milestone).
 2. Add Kubernetes manifests/Helm charts alongside the existing Compose setup.
 3. Retry with exponential backoff on inter-service calls (including the order→inventory
    gRPC call, which today fails a request immediately if inventory-service is down).

@@ -9,12 +9,16 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
 	StreamName     = "ORDERS"
 	SubjectCreated = "orders.created"
 )
+
+var tracer = otel.Tracer("analytics-service/events")
 
 // OrderCreated mirrors the wire format published by order-service on
 // SubjectCreated. It is a contract, not shared Go code, so each consumer
@@ -75,6 +79,10 @@ func (s *Subscriber) Consume(ctx context.Context, durableName string, logger *sl
 	}
 
 	consumeCtx, err := consumer.Consume(func(msg jetstream.Msg) {
+		msgCtx := otel.GetTextMapPropagator().Extract(ctx, natsHeaderCarrier(msg.Headers()))
+		msgCtx, span := tracer.Start(msgCtx, "process "+SubjectCreated, trace.WithSpanKind(trace.SpanKindConsumer))
+		defer span.End()
+
 		var evt OrderCreated
 		if err := json.Unmarshal(msg.Data(), &evt); err != nil {
 			logger.Error("failed to decode order created event", "error", err)
@@ -82,7 +90,7 @@ func (s *Subscriber) Consume(ctx context.Context, durableName string, logger *sl
 			return
 		}
 
-		if err := handle(ctx, evt); err != nil {
+		if err := handle(msgCtx, evt); err != nil {
 			logger.Error("failed to handle order created event", "order_id", evt.OrderID, "error", err)
 			_ = msg.Nak()
 			return

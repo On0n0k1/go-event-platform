@@ -10,12 +10,15 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/On0n0k1/go-event-platform/order-service/internal/config"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/db"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/events"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/httpx"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/inventoryclient"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/order"
+	"github.com/On0n0k1/go-event-platform/order-service/internal/tracing"
 )
 
 func main() {
@@ -30,6 +33,19 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	shutdownTracing, err := tracing.Init(ctx, "order-service", cfg.OTLPEndpoint)
+	if err != nil {
+		logger.Error("failed to initialize tracing", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			logger.Error("failed to shut down tracing", "error", err)
+		}
+	}()
 
 	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -64,9 +80,15 @@ func main() {
 	handler.Register(mux)
 	mux.HandleFunc("GET /healthz", httpx.HealthHandler(pool))
 
+	tracedHandler := otelhttp.NewHandler(httpx.LoggingMiddleware(logger)(mux), "order-service",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/healthz"
+		}),
+	)
+
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
-		Handler: httpx.LoggingMiddleware(logger)(mux),
+		Handler: tracedHandler,
 	}
 
 	go func() {

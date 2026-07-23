@@ -3,14 +3,16 @@ package config
 import "os"
 
 type Config struct {
-	Port    string
-	NatsURL string
+	Port         string
+	NatsURL      string
+	OTLPEndpoint string
 }
 
 func Load() Config {
 	return Config{
-		Port:    getEnv("PORT", "8084"),
-		NatsURL: getEnv("NATS_URL", "nats://localhost:4222"),
+		Port:         getEnv("PORT", "8084"),
+		NatsURL:      getEnv("NATS_URL", "nats://localhost:4222"),
+		OTLPEndpoint: getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
 	}
 }
 

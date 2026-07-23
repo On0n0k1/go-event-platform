@@ -6,18 +6,20 @@ import (
 )
 
 type Config struct {
-	Port        string
-	GRPCPort    string
-	DatabaseURL string
-	RedisAddr   string
+	Port         string
+	GRPCPort     string
+	DatabaseURL  string
+	RedisAddr    string
+	OTLPEndpoint string
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		Port:        getEnv("PORT", "8081"),
-		GRPCPort:    getEnv("GRPC_PORT", "9081"),
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		RedisAddr:   getEnv("REDIS_ADDR", "localhost:6379"),
+		Port:         getEnv("PORT", "8081"),
+		GRPCPort:     getEnv("GRPC_PORT", "9081"),
+		DatabaseURL:  os.Getenv("DATABASE_URL"),
+		RedisAddr:    getEnv("REDIS_ADDR", "localhost:6379"),
+		OTLPEndpoint: getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
 	}
 
 	if cfg.DatabaseURL == "" {
