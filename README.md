@@ -1,10 +1,10 @@
 # go-event-platform
 
 A small Go microservices showcase: an API gateway routing to an order service, which
-reserves stock from an inventory service over gRPC and publishes an event that
-notification and analytics services consume asynchronously over NATS. Built
+reserves stock from a Redis-cached inventory service over gRPC and publishes an event
+that notification and analytics services consume asynchronously over NATS. Built
 incrementally as a demonstrable MVP, with room to grow into a fuller event-driven
-platform (caching, observability, Kubernetes) on top of these foundations.
+platform (observability, Kubernetes) on top of these foundations.
 
 ## Architecture
 
@@ -17,8 +17,8 @@ platform (caching, observability, Kubernetes) on top of these foundations.
             ┌───────────┴────────────┐
             ▼                        ▼
    ┌─────────────────┐      ┌──────────────────────┐
-   │  order-service   │ ───► │  inventory-service    │
-   │   :8082          │ gRPC │   :8081 (REST reads)  │
+   │  order-service   │ ───► │  inventory-service    │──► redis (cache-aside,
+   │   :8082          │ gRPC │   :8081 (REST reads)  │    GetItem only)
    └────────┬─────────┘      │   :9081 (gRPC)        │
             │  publish       └───────────┬───────────┘
             │  orders.created            │
@@ -53,7 +53,12 @@ platform (caching, observability, Kubernetes) on top of these foundations.
   (external reads, e.g. the gateway's `GET /items/{sku}`) and a **gRPC** server used only
   for the internal `ReserveStock` call from order-service. Reservation itself is an
   atomic conditional update (`quantity - N` only if enough stock is available) — the
-  same `Store` backs both transports, so there's no duplicated business logic.
+  same `Store` backs both transports, so there's no duplicated business logic. Reads go
+  through a Redis cache-aside layer (`CachingStore`, 30s TTL); a successful reservation
+  always invalidates that SKU's cache entry rather than trusting its own write, so a
+  read right after a reservation is never served stale data — any Redis error is treated
+  as a cache miss and falls back to Postgres, so a Redis outage degrades performance,
+  not correctness.
 - **notification-service** and **analytics-service** are independent consumers of the
   `orders.created` subject via durable JetStream consumers. Neither is called directly
   by order-service, and neither knows the other exists — this is the asynchronous,
@@ -69,7 +74,7 @@ platform (caching, observability, Kubernetes) on top of these foundations.
 |-------------------------|---------------|------------------------------------------------------------------|-------------------|
 | `api-gateway`           | 8080          | Routes external requests to backend services                      | none              |
 | `order-service`         | 8082          | Order creation/lookup; reserves stock via gRPC; publishes `OrderCreated` | `order-db`, NATS  |
-| `inventory-service`     | 8081 (REST), 9081 (gRPC) | Item lookup (REST) and stock reservation (gRPC)         | `inventory-db`    |
+| `inventory-service`     | 8081 (REST), 9081 (gRPC) | Item lookup (REST, cached) and stock reservation (gRPC) | `inventory-db`, Redis |
 | `notification-service`  | 8083          | Consumes `OrderCreated`, simulates sending a confirmation           | NATS              |
 | `analytics-service`     | 8084          | Consumes `OrderCreated`, tracks running order/quantity totals        | NATS (in-memory stats) |
 
@@ -97,7 +102,7 @@ REST (port 8081, external reads):
 | Method | Path            | Description                       |
 |--------|-----------------|--------------------------------------|
 | GET    | `/healthz`      | Liveness + DB connectivity check       |
-| GET    | `/items/{sku}`  | Fetch current stock for a SKU          |
+| GET    | `/items/{sku}`  | Fetch current stock for a SKU (Redis cache-aside, 30s TTL) |
 
 gRPC (port 9081, internal only — see `proto/inventoryv1/inventory.proto`):
 
@@ -173,7 +178,7 @@ go-event-platform/
 ├── go.work
 ├── api-gateway/            # reverse proxy
 ├── order-service/          # order domain + Postgres + inventory gRPC client + NATS publisher
-├── inventory-service/      # inventory domain + Postgres + REST reads + gRPC reservation server
+├── inventory-service/      # inventory domain + Postgres + Redis cache + REST reads + gRPC reservation server
 ├── notification-service/   # NATS consumer, simulated notifications
 ├── analytics-service/      # NATS consumer, in-memory stats + /stats endpoint
 ├── integration/            # end-to-end tests against the real docker-compose stack
@@ -183,19 +188,20 @@ go-event-platform/
 
 Each service follows the same internal shape (fields vary — e.g. only services with a
 database have `db/`, only order/inventory-service have `proto/`+`inventoryv1/`, only
-services touching NATS have `events/`):
+inventory-service has `cache/`, only services touching NATS have `events/`):
 
 ```
 <service>/
 ├── proto/inventoryv1/inventory.proto   # gRPC contract source (order/inventory-service only)
 ├── cmd/<service>/main.go   # wiring, graceful shutdown, lifecycle
 ├── internal/
+│   ├── cache/               # Redis client helper (inventory-service only)
 │   ├── config/             # env-var configuration
 │   ├── db/                 # Postgres pool + embedded schema (order/inventory-service only)
 │   ├── events/              # NATS JetStream publisher/subscriber (order/notification/analytics)
 │   ├── httpx/               # JSON helpers, logging middleware, healthz
 │   ├── inventoryv1/          # generated gRPC code (order/inventory-service only)
-│   └── <domain>/            # models, store, HTTP/gRPC handlers
+│   └── <domain>/            # models, store (+ CachingStore decorator), HTTP/gRPC handlers
 └── Dockerfile
 ```
 
@@ -206,8 +212,8 @@ services touching NATS have `events/`):
 
 ## Running locally
 
-The whole stack (both Postgres instances, NATS, and all five services) runs with one
-command:
+The whole stack (both Postgres instances, NATS, Redis, and all five services) runs with
+one command:
 
 ```bash
 docker compose up --build
@@ -227,6 +233,14 @@ curl http://localhost:8080/orders/<id>
 
 # confirm stock was decremented
 curl http://localhost:8080/items/SKU-001
+```
+
+Check the cache directly if you want to see it working — the key should exist with a TTL
+after the read above, and be gone immediately after a reservation:
+
+```bash
+docker compose exec redis redis-cli GET item:SKU-001
+docker compose exec redis redis-cli TTL item:SKU-001
 ```
 
 Then check the asynchronous side picked it up (notification/analytics services aren't
@@ -256,11 +270,12 @@ cd inventory-service
 DATABASE_URL="postgres://inventory:inventory@localhost:55432/inventory?sslmode=disable" \
 PORT=8081 \
 GRPC_PORT=9081 \
+REDIS_ADDR=localhost:6379 \
 go run ./cmd/inventory-service
 ```
 
-(Use `docker compose up inventory-db order-db nats -d` first to get local Postgres and
-NATS instances on the ports above.)
+(Use `docker compose up inventory-db order-db nats redis -d` first to get local
+Postgres, NATS, and Redis instances on the ports above.)
 
 ## Testing
 
@@ -301,12 +316,11 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
 This is intentionally the simplest slice that demonstrates the architecture end to end.
 Planned evolution, roughly in order:
 
-1. Add Redis caching (e.g. inventory lookups).
-2. Add OpenTelemetry tracing + Prometheus metrics + Grafana dashboards.
-3. Add Kubernetes manifests/Helm charts alongside the existing Compose setup.
-4. Retry with exponential backoff on inter-service calls (including the order→inventory
+1. Add OpenTelemetry tracing + Prometheus metrics + Grafana dashboards.
+2. Add Kubernetes manifests/Helm charts alongside the existing Compose setup.
+3. Retry with exponential backoff on inter-service calls (including the order→inventory
    gRPC call, which today fails a request immediately if inventory-service is down).
-5. Transactional outbox for order-service's event publish, so a NATS publish failure
+4. Transactional outbox for order-service's event publish, so a NATS publish failure
    can't silently diverge from the persisted order (currently best-effort/logged only).
-6. TLS for the gRPC connection between order-service and inventory-service (currently
+5. TLS for the gRPC connection between order-service and inventory-service (currently
    plaintext/insecure credentials, fine for local Compose but not production).

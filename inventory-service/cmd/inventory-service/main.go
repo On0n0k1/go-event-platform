@@ -13,6 +13,7 @@ import (
 
 	"google.golang.org/grpc"
 
+	"github.com/On0n0k1/go-event-platform/inventory-service/internal/cache"
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/config"
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/db"
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/httpx"
@@ -45,7 +46,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	store := inventory.NewPostgresStore(pool)
+	redisClient, err := cache.NewClient(ctx, cfg.RedisAddr)
+	if err != nil {
+		logger.Error("failed to connect to redis", "error", err)
+		os.Exit(1)
+	}
+	defer redisClient.Close()
+
+	store := inventory.NewCachingStore(inventory.NewPostgresStore(pool), redisClient)
 
 	handler := inventory.NewHandler(store, logger)
 	mux := http.NewServeMux()

@@ -43,6 +43,16 @@ services:
       timeout: 3s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   inventory-service:
     build:
       context: ./inventory-service
@@ -50,11 +60,14 @@ services:
       PORT: "8081"
       GRPC_PORT: "9081"
       DATABASE_URL: postgres://inventory:inventory@inventory-db:5432/inventory?sslmode=disable
+      REDIS_ADDR: redis:6379
     ports:
       - "8081:8081"
       - "9081:9081"
     depends_on:
       inventory-db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8081/healthz"]

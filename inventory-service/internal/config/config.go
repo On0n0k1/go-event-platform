@@ -9,6 +9,7 @@ type Config struct {
 	Port        string
 	GRPCPort    string
 	DatabaseURL string
+	RedisAddr   string
 }
 
 func Load() (Config, error) {
@@ -16,6 +17,7 @@ func Load() (Config, error) {
 		Port:        getEnv("PORT", "8081"),
 		GRPCPort:    getEnv("GRPC_PORT", "9081"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
+		RedisAddr:   getEnv("REDIS_ADDR", "localhost:6379"),
 	}
 
 	if cfg.DatabaseURL == "" {
