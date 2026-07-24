@@ -51,7 +51,9 @@ foundations.
   to the right backend service. No business logic of its own.
 - **order-service** owns orders. Creating an order calls inventory-service over **gRPC**
   to reserve stock before persisting the order; if reservation fails, no order is
-  created. After persisting, it publishes an `OrderCreated` event to NATS JetStream —
+  created. That call retries with backoff on connection-level failures (see
+  [Retry behavior](#retry-behavior)) rather than failing the request on the first blip.
+  After persisting, it publishes an `OrderCreated` event to NATS JetStream —
   best-effort, logged on failure but never blocking the response, since the order is
   already durable in Postgres by that point.
 - **inventory-service** owns stock levels and runs two servers: its existing REST API
@@ -194,6 +196,34 @@ Requires `protoc` plus the `protoc-gen-go`/`protoc-gen-go-grpc` plugins on `PATH
 (`go install google.golang.org/protobuf/cmd/protoc-gen-go@latest` and
 `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`).
 
+### Retry behavior
+
+order-service's `inventoryclient` (`internal/retry`, a small generic exponential-backoff
+helper with equal jitter) retries the `ReserveStock` call, but **only** on
+`codes.Unavailable` — connection-level failures where the request never reached the
+server. `ReserveStock` mutates state and isn't idempotent, so anything else (including
+`DeadlineExceeded`, where the server may already have processed the request) is left
+alone rather than risking a double reservation.
+
+Two things had to be tuned together to make this safe and actually useful:
+
+- **The retry budget** (`reserveRetryConfig`: 6 attempts, 300ms base / 2s max delay) is
+  deliberately sized to plausibly bridge a real restart of inventory-service (a redeploy,
+  a crash-restart), not just a sub-second blip — a conscious latency-for-resilience
+  trade-off on a synchronous, user-facing request.
+- **`grpc.WithConnectParams(MinConnectTimeout: 2s)`** on the client bounds how long a
+  single dial attempt can take. Without it, an unreachable-but-not-actively-refusing peer
+  (e.g. a stopped container whose IP briefly still resolves) hangs on the OS's own TCP
+  connect timeout — observed at 25s in testing — which swallows the retry budget entirely
+  regardless of how it's configured. With it, a bad attempt fails fast enough for the
+  retry loop to actually do its job.
+
+Verified live: killing inventory-service and restarting it mid-request lets a
+`POST /orders` succeed transparently (no client-visible error, ~3-4s added latency,
+visible as `retry` events on the request's trace span and in `grpc_client_retries_total`)
+as long as it comes back within the budget; if it doesn't, the request still fails
+cleanly with a 502 in a bounded ~5-6s rather than hanging.
+
 ### Tracing
 
 Each service has an `internal/tracing` package (identical across services, like
@@ -265,8 +295,8 @@ go-event-platform/
 
 Each service follows the same internal shape (fields vary — e.g. only services with a
 database have `db/`, only order/inventory-service have `proto/`+`inventoryv1/`, only
-inventory-service has `cache/`, only services touching NATS have `events/`;
-`tracing/` and `metrics/` are the two packages every service has):
+inventory-service has `cache/`, only order-service has `retry/`, only services touching
+NATS have `events/`; `tracing/` and `metrics/` are the two packages every service has):
 
 ```
 <service>/
@@ -280,6 +310,7 @@ inventory-service has `cache/`, only services touching NATS have `events/`;
 │   ├── httpx/               # JSON helpers, logging middleware (+ trace_id), healthz
 │   ├── inventoryv1/          # generated gRPC code (order/inventory-service only)
 │   ├── metrics/              # Prometheus HTTP middleware (+ gRPC interceptors on order/inventory-service)
+│   ├── retry/                 # generic exponential-backoff helper (order-service only)
 │   ├── tracing/              # OTel TracerProvider setup/shutdown (every service)
 │   └── <domain>/            # models, store (+ CachingStore decorator), HTTP/gRPC handlers
 └── Dockerfile
@@ -406,9 +437,7 @@ This is intentionally the simplest slice that demonstrates the architecture end 
 Planned evolution, roughly in order:
 
 1. Add Kubernetes manifests/Helm charts alongside the existing Compose setup.
-2. Retry with exponential backoff on inter-service calls (including the order→inventory
-   gRPC call, which today fails a request immediately if inventory-service is down).
-3. Transactional outbox for order-service's event publish, so a NATS publish failure
+2. Transactional outbox for order-service's event publish, so a NATS publish failure
    can't silently diverge from the persisted order (currently best-effort/logged only).
-4. TLS for the gRPC connection between order-service and inventory-service (currently
+3. TLS for the gRPC connection between order-service and inventory-service (currently
    plaintext/insecure credentials, fine for local Compose but not production).

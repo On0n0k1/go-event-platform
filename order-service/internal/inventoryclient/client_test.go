@@ -3,8 +3,12 @@ package inventoryclient
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"net"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -46,7 +50,20 @@ func newTestClient(t *testing.T, srv inventoryv1.InventoryServiceServer) *Client
 	}
 	t.Cleanup(func() { conn.Close() })
 
-	return &Client{conn: conn, client: inventoryv1.NewInventoryServiceClient(conn)}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return &Client{conn: conn, client: inventoryv1.NewInventoryServiceClient(conn), log: log}
+}
+
+// useFastRetryConfig shrinks reserveRetryConfig's delays for the duration of
+// a test, so retry-triggering test cases don't sit through the production
+// backoff (up to ~1s per attempt).
+func useFastRetryConfig(t *testing.T) {
+	t.Helper()
+
+	orig := reserveRetryConfig
+	reserveRetryConfig.BaseDelay = 1 * time.Millisecond
+	reserveRetryConfig.MaxDelay = 5 * time.Millisecond
+	t.Cleanup(func() { reserveRetryConfig = orig })
 }
 
 func TestClientReserve(t *testing.T) {
@@ -109,5 +126,74 @@ func TestClientReserve(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestClientReserveRetriesOnUnavailableThenSucceeds(t *testing.T) {
+	useFastRetryConfig(t)
+
+	var calls atomic.Int32
+	srv := &fakeInventoryServer{
+		reserveFunc: func(_ context.Context, req *inventoryv1.ReserveStockRequest) (*inventoryv1.ReserveStockResponse, error) {
+			n := calls.Add(1)
+			if n < 3 {
+				return nil, status.Error(codes.Unavailable, "connection refused")
+			}
+			return &inventoryv1.ReserveStockResponse{Sku: req.GetSku(), Name: "Widget", Quantity: 90}, nil
+		},
+	}
+	client := newTestClient(t, srv)
+
+	item, err := client.Reserve(context.Background(), "SKU-001", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if item.Quantity != 90 {
+		t.Fatalf("quantity = %d, want 90", item.Quantity)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("calls = %d, want 3 (2 failures + 1 success)", got)
+	}
+}
+
+func TestClientReserveExhaustsRetriesOnPersistentUnavailable(t *testing.T) {
+	useFastRetryConfig(t)
+
+	var calls atomic.Int32
+	srv := &fakeInventoryServer{
+		reserveFunc: func(context.Context, *inventoryv1.ReserveStockRequest) (*inventoryv1.ReserveStockResponse, error) {
+			calls.Add(1)
+			return nil, status.Error(codes.Unavailable, "connection refused")
+		},
+	}
+	client := newTestClient(t, srv)
+
+	_, err := client.Reserve(context.Background(), "SKU-001", 10)
+	if err == nil {
+		t.Fatal("expected an error after exhausting retries, got nil")
+	}
+	if got := calls.Load(); int(got) != reserveRetryConfig.MaxAttempts {
+		t.Fatalf("calls = %d, want %d (MaxAttempts)", got, reserveRetryConfig.MaxAttempts)
+	}
+}
+
+func TestClientReserveDoesNotRetryNonUnavailableErrors(t *testing.T) {
+	useFastRetryConfig(t)
+
+	var calls atomic.Int32
+	srv := &fakeInventoryServer{
+		reserveFunc: func(context.Context, *inventoryv1.ReserveStockRequest) (*inventoryv1.ReserveStockResponse, error) {
+			calls.Add(1)
+			return nil, status.Error(codes.FailedPrecondition, "insufficient stock")
+		},
+	}
+	client := newTestClient(t, srv)
+
+	_, err := client.Reserve(context.Background(), "SKU-001", 10)
+	if !errors.Is(err, ErrInsufficientStock) {
+		t.Fatalf("error = %v, want ErrInsufficientStock", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls = %d, want 1 (business errors must not be retried -- ReserveStock isn't idempotent)", got)
 	}
 }

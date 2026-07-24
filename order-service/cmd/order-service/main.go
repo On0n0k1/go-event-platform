@@ -67,7 +67,7 @@ func main() {
 	}
 	defer publisher.Close()
 
-	inventory, err := inventoryclient.New(cfg.InventoryServiceGRPCAddr)
+	inventory, err := inventoryclient.New(cfg.InventoryServiceGRPCAddr, logger)
 	if err != nil {
 		logger.Error("failed to create inventory-service client", "error", err)
 		os.Exit(1)

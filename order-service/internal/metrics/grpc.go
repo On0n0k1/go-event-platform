@@ -21,7 +21,19 @@ var (
 		Help:    "Outbound gRPC request duration in seconds.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"method", "code"})
+
+	grpcClientRetriesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "grpc_client_retries_total",
+		Help: "Total retried outbound gRPC calls, labeled by method.",
+	}, []string{"method"})
 )
+
+// RecordGRPCClientRetry increments the retry counter for method. Called once
+// per retry (not per attempt), so it reflects how often the client needed to
+// fall back to a retry rather than the total attempt count.
+func RecordGRPCClientRetry(method string) {
+	grpcClientRetriesTotal.WithLabelValues(method).Inc()
+}
 
 // UnaryClientInterceptor records request count/duration by method and gRPC
 // status code.
