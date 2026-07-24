@@ -349,6 +349,7 @@ go-event-platform/
 ├── observability/          # prometheus.yml + grafana provisioning (datasources, dashboard)
 ├── certs/                  # generate.sh (checked in) + generated dev mTLS certs (gitignored)
 ├── k8s/                    # Kubernetes manifests (see "Running on Kubernetes" below)
+├── kind-config.yaml        # kind cluster config (Ingress host port mapping)
 ├── docker-compose.yml
 └── .github/workflows/ci.yml
 ```
@@ -482,12 +483,27 @@ services, same env vars, same mTLS setup — targeting a local [kind](https://ki
 cluster. There's no registry involved: images are built locally and loaded straight into
 the cluster's node.
 
-Create the cluster and namespace:
+Create the cluster and namespace. `kind-config.yaml` maps host ports 8090/8443 to the
+node (adjust if those are free/taken differently on your machine — 80/443 are the kind
+defaults, but are often already bound locally) and labels the node `ingress-ready` so
+ingress-nginx schedules onto it:
 
 ```bash
-kind create cluster --name go-event-platform
+kind create cluster --config kind-config.yaml
 kubectl apply -f k8s/00-namespace.yaml
 ```
+
+Install [ingress-nginx](https://kubernetes.github.io/ingress-nginx/) (its kind-specific
+manifest, which wires up the hostPort mapping above) and wait for its controller pod:
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+kubectl wait --namespace ingress-nginx --for=condition=ready pod \
+  --selector=app.kubernetes.io/component=controller --timeout=120s
+```
+
+(If that `wait` fails immediately with "no matching resources found", the controller pod
+just hasn't been scheduled yet — wait a couple seconds and re-run it.)
 
 Build and load every service image (kind can't pull images that only exist in your local
 Docker daemon, so each one has to be explicitly loaded onto the cluster's node):
@@ -518,12 +534,20 @@ kubectl apply -f k8s/
 kubectl wait --for=condition=Ready pod --all -n go-event-platform --timeout=180s
 ```
 
-Reach any service with `kubectl port-forward`, same idea as the compose ports:
+api-gateway is reachable straight from the host through the Ingress, no port-forward
+needed — this is the one service meant for external traffic, same role the `8080:8080`
+port mapping plays in compose:
 
 ```bash
-kubectl port-forward -n go-event-platform svc/api-gateway 8080:8080 &
-curl -X POST -d '{"sku":"SKU-001","quantity":5}' http://localhost:8080/orders
+curl http://localhost:8090/items/SKU-001
+curl -X POST -d '{"sku":"SKU-001","quantity":5}' http://localhost:8090/orders
+```
 
+Everything else stays internal-only, same as compose not publishing notification-service
+or the observability UIs anywhere but the ports it exposes — reach those with
+`kubectl port-forward`:
+
+```bash
 kubectl port-forward -n go-event-platform svc/jaeger 16686:16686 &      # http://localhost:16686
 kubectl port-forward -n go-event-platform svc/grafana 3000:3000 &       # http://localhost:3000
 kubectl port-forward -n go-event-platform svc/prometheus 9090:9090 &    # http://localhost:9090
@@ -575,4 +599,4 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
 This is intentionally the simplest slice that demonstrates the architecture end to end.
 Planned evolution, roughly in order:
 
-1. Add an Ingress in front of api-gateway and package `k8s/` as a Helm chart.
+1. Package `k8s/` as a Helm chart.
