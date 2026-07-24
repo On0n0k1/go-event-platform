@@ -26,6 +26,10 @@ go.work.sum
 # env file
 .env
 
+# Generated local-dev mTLS certs (see certs/generate.sh)
+/certs/*.crt
+/certs/*.key
+
 # Editor/IDE
 # .idea/
 # .vscode/

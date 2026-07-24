@@ -2,6 +2,7 @@ package inventoryclient
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,7 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
 	inventoryv1 "github.com/On0n0k1/go-event-platform/order-service/internal/inventoryv1"
@@ -52,9 +53,9 @@ type Client struct {
 	log    *slog.Logger
 }
 
-func New(addr string, log *slog.Logger) (*Client, error) {
+func New(addr string, log *slog.Logger, tlsConfig *tls.Config) (*Client, error) {
 	conn, err := grpc.NewClient(addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
 		grpc.WithUnaryInterceptor(metrics.UnaryClientInterceptor()),
 		// Bounds a single dial attempt so an unreachable/hanging peer surfaces

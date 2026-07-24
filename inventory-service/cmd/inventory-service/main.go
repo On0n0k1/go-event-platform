@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/cache"
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/config"
@@ -22,6 +23,7 @@ import (
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/inventory"
 	inventoryv1 "github.com/On0n0k1/go-event-platform/inventory-service/internal/inventoryv1"
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/metrics"
+	"github.com/On0n0k1/go-event-platform/inventory-service/internal/tlsconfig"
 	"github.com/On0n0k1/go-event-platform/inventory-service/internal/tracing"
 )
 
@@ -89,7 +91,14 @@ func main() {
 		Handler: tracedHandler,
 	}
 
+	serverTLSConfig, err := tlsconfig.Server(cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSCAFile)
+	if err != nil {
+		logger.Error("failed to load TLS config", "error", err)
+		os.Exit(1)
+	}
+
 	grpcServer := grpc.NewServer(
+		grpc.Creds(credentials.NewTLS(serverTLSConfig)),
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.UnaryInterceptor(metrics.UnaryServerInterceptor()),
 	)

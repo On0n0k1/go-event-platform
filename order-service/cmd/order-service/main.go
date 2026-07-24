@@ -20,6 +20,7 @@ import (
 	"github.com/On0n0k1/go-event-platform/order-service/internal/metrics"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/order"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/outbox"
+	"github.com/On0n0k1/go-event-platform/order-service/internal/tlsconfig"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/tracing"
 )
 
@@ -70,7 +71,13 @@ func main() {
 	}
 	defer publisher.Close()
 
-	inventory, err := inventoryclient.New(cfg.InventoryServiceGRPCAddr, logger)
+	clientTLSConfig, err := tlsconfig.Client(cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSCAFile)
+	if err != nil {
+		logger.Error("failed to load TLS config", "error", err)
+		os.Exit(1)
+	}
+
+	inventory, err := inventoryclient.New(cfg.InventoryServiceGRPCAddr, logger, clientTLSConfig)
 	if err != nil {
 		logger.Error("failed to create inventory-service client", "error", err)
 		os.Exit(1)

@@ -1,12 +1,12 @@
 # go-event-platform
 
 A small Go microservices showcase: an API gateway routing to an order service, which
-reserves stock from a Redis-cached inventory service over gRPC and publishes an event
-that notification and analytics services consume asynchronously over NATS — all traced
-end to end with OpenTelemetry into Jaeger, and all exposing Prometheus metrics on a
-provisioned Grafana dashboard. Built incrementally as a demonstrable MVP, with room to
-grow into a fuller event-driven platform (Kubernetes and beyond) on top of these
-foundations.
+reserves stock from a Redis-cached inventory service over mutually-authenticated TLS
+gRPC and publishes an event that notification and analytics services consume
+asynchronously over NATS — all traced end to end with OpenTelemetry into Jaeger, and
+all exposing Prometheus metrics on a provisioned Grafana dashboard. Built incrementally
+as a demonstrable MVP, with room to grow into a fuller event-driven platform (Kubernetes
+and beyond) on top of these foundations.
 
 ## Architecture
 
@@ -58,9 +58,10 @@ foundations.
   — a background relay publishes it to NATS afterward, so a NATS outage can never cause
   an order to exist with no event ever queued for it.
 - **inventory-service** owns stock levels and runs two servers: its existing REST API
-  (external reads, e.g. the gateway's `GET /items/{sku}`) and a **gRPC** server used only
-  for the internal `ReserveStock` call from order-service. Reservation itself is an
-  atomic conditional update (`quantity - N` only if enough stock is available) — the
+  (external reads, e.g. the gateway's `GET /items/{sku}`) and a **gRPC** server, secured
+  with **mutual TLS**, used only for the internal `ReserveStock` call from order-service
+  (see [gRPC mTLS](#grpc-mtls)). Reservation itself is an atomic conditional update
+  (`quantity - N` only if enough stock is available) — the
   same `Store` backs both transports, so there's no duplicated business logic. Reads go
   through a Redis cache-aside layer (`CachingStore`, 30s TTL); a successful reservation
   always invalidates that SKU's cache entry rather than trusting its own write, so a
@@ -197,6 +198,29 @@ Requires `protoc` plus the `protoc-gen-go`/`protoc-gen-go-grpc` plugins on `PATH
 (`go install google.golang.org/protobuf/cmd/protoc-gen-go@latest` and
 `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`).
 
+### gRPC mTLS
+
+The order-service → inventory-service gRPC connection uses **mutual TLS**: inventory-service
+requires and verifies a client certificate on every connection
+(`tls.RequireAndVerifyClientCert`), not just encryption. A `certs` service in
+docker-compose.yml runs `certs/generate.sh` once before either service starts
+(`depends_on: condition: service_completed_successfully`), generating a throwaway
+self-signed CA plus a server cert (`CN=inventory-service`) and a client cert
+(`CN=order-service`) into a host-mounted `./certs/` directory — `docker compose up`
+needs no manual setup step, and the same directory is readable outside Docker too (see
+below). Each service loads its identity via a small `internal/tlsconfig` package
+(`Server`/`Client`, one function each — they only differ in `ClientAuth`/`RootCAs`, not
+worth sharing across modules for that).
+
+`certs/` is gitignored (`generate.sh` itself is checked in); regenerate at any time by
+deleting the directory's contents and re-running `docker compose up certs`, or the full
+stack.
+
+Verified live: `openssl s_client` against inventory-service's gRPC port without a client
+cert fails the handshake with `tlsv13 alert certificate required`; with the generated
+`order-service.crt`/`.key`, it succeeds — confirming the server genuinely enforces mTLS
+rather than just having unused code paths for it.
+
 ### Retry behavior
 
 order-service's `inventoryclient` (`internal/retry`, a small generic exponential-backoff
@@ -323,15 +347,16 @@ go-event-platform/
 ├── analytics-service/      # NATS consumer, in-memory stats + /stats endpoint
 ├── integration/            # end-to-end tests against the real docker-compose stack
 ├── observability/          # prometheus.yml + grafana provisioning (datasources, dashboard)
+├── certs/                  # generate.sh (checked in) + generated dev mTLS certs (gitignored)
 ├── docker-compose.yml
 └── .github/workflows/ci.yml
 ```
 
 Each service follows the same internal shape (fields vary — e.g. only services with a
-database have `db/`, only order/inventory-service have `proto/`+`inventoryv1/`, only
-inventory-service has `cache/`, only order-service has `retry/`+`outbox/`, only services
-touching NATS have `events/`; `tracing/` and `metrics/` are the two packages every
-service has):
+database have `db/`, only order/inventory-service have `proto/`+`inventoryv1/`+`tlsconfig/`,
+only inventory-service has `cache/`, only order-service has `retry/`+`outbox/`, only
+services touching NATS have `events/`; `tracing/` and `metrics/` are the two packages
+every service has):
 
 ```
 <service>/
@@ -347,6 +372,7 @@ service has):
 │   ├── metrics/              # Prometheus HTTP middleware (+ gRPC interceptors on order/inventory-service)
 │   ├── outbox/                # transactional outbox relay (order-service only)
 │   ├── retry/                 # generic exponential-backoff helper (order-service only)
+│   ├── tlsconfig/             # mTLS cert/key loading (order/inventory-service only)
 │   ├── tracing/              # OTel TracerProvider setup/shutdown (every service)
 │   └── <domain>/            # models, store (+ CachingStore decorator), HTTP/gRPC handlers
 └── Dockerfile
@@ -360,7 +386,8 @@ service has):
 ## Running locally
 
 The whole stack (both Postgres instances, NATS, Redis, Jaeger, Prometheus, Grafana, and
-all five services) runs with one command:
+all five services) runs with one command — this also generates the dev mTLS certs into
+`./certs/` on first run (see [gRPC mTLS](#grpc-mtls)), nothing manual required:
 
 ```bash
 docker compose up --build
@@ -426,7 +453,9 @@ docker compose down -v
 ### Running a single service outside Docker
 
 Each service reads its config from env vars (see `internal/config` in each module).
-For example, inventory-service:
+inventory-service and order-service need `./certs/` populated first (`docker compose up
+certs`, or the full stack once — it's a host directory, so it's readable outside Docker
+too). For example, inventory-service:
 
 ```bash
 cd inventory-service
@@ -435,6 +464,9 @@ PORT=8081 \
 GRPC_PORT=9081 \
 REDIS_ADDR=localhost:6379 \
 OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 \
+TLS_CERT_FILE=../certs/inventory-service.crt \
+TLS_KEY_FILE=../certs/inventory-service.key \
+TLS_CA_FILE=../certs/ca.crt \
 go run ./cmd/inventory-service
 ```
 
@@ -482,5 +514,3 @@ This is intentionally the simplest slice that demonstrates the architecture end 
 Planned evolution, roughly in order:
 
 1. Add Kubernetes manifests/Helm charts alongside the existing Compose setup.
-2. TLS for the gRPC connection between order-service and inventory-service (currently
-   plaintext/insecure credentials, fine for local Compose but not production).

@@ -99,6 +99,12 @@ services:
       timeout: 3s
       retries: 5
 
+  certs:
+    image: alpine:3.20
+    volumes:
+      - ./certs:/certs
+    entrypoint: ["/bin/sh", "/certs/generate.sh"]
+
   inventory-service:
     build:
       context: ./inventory-service
@@ -108,6 +114,11 @@ services:
       DATABASE_URL: postgres://inventory:inventory@inventory-db:5432/inventory?sslmode=disable
       REDIS_ADDR: redis:6379
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      TLS_CERT_FILE: /certs/inventory-service.crt
+      TLS_KEY_FILE: /certs/inventory-service.key
+      TLS_CA_FILE: /certs/ca.crt
+    volumes:
+      - ./certs:/certs:ro
     ports:
       - "8081:8081"
       - "9081:9081"
@@ -118,6 +129,8 @@ services:
         condition: service_healthy
       jaeger:
         condition: service_healthy
+      certs:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8081/healthz"]
       interval: 5s
@@ -133,6 +146,11 @@ services:
       INVENTORY_SERVICE_GRPC_ADDR: inventory-service:9081
       NATS_URL: nats://nats:4222
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      TLS_CERT_FILE: /certs/order-service.crt
+      TLS_KEY_FILE: /certs/order-service.key
+      TLS_CA_FILE: /certs/ca.crt
+    volumes:
+      - ./certs:/certs:ro
     ports:
       - "8082:8082"
     depends_on:
@@ -144,6 +162,8 @@ services:
         condition: service_healthy
       jaeger:
         condition: service_healthy
+      certs:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8082/healthz"]
       interval: 5s

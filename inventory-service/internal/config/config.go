@@ -11,6 +11,9 @@ type Config struct {
 	DatabaseURL  string
 	RedisAddr    string
 	OTLPEndpoint string
+	TLSCertFile  string
+	TLSKeyFile   string
+	TLSCAFile    string
 }
 
 func Load() (Config, error) {
@@ -20,6 +23,9 @@ func Load() (Config, error) {
 		DatabaseURL:  os.Getenv("DATABASE_URL"),
 		RedisAddr:    getEnv("REDIS_ADDR", "localhost:6379"),
 		OTLPEndpoint: getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
+		TLSCertFile:  getEnv("TLS_CERT_FILE", "/certs/inventory-service.crt"),
+		TLSKeyFile:   getEnv("TLS_KEY_FILE", "/certs/inventory-service.key"),
+		TLSCAFile:    getEnv("TLS_CA_FILE", "/certs/ca.crt"),
 	}
 
 	if cfg.DatabaseURL == "" {

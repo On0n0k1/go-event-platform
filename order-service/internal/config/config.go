@@ -11,6 +11,9 @@ type Config struct {
 	InventoryServiceGRPCAddr string
 	NatsURL                  string
 	OTLPEndpoint             string
+	TLSCertFile              string
+	TLSKeyFile               string
+	TLSCAFile                string
 }
 
 func Load() (Config, error) {
@@ -20,6 +23,9 @@ func Load() (Config, error) {
 		InventoryServiceGRPCAddr: getEnv("INVENTORY_SERVICE_GRPC_ADDR", "localhost:9081"),
 		NatsURL:                  getEnv("NATS_URL", "nats://localhost:4222"),
 		OTLPEndpoint:             getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
+		TLSCertFile:              getEnv("TLS_CERT_FILE", "/certs/order-service.crt"),
+		TLSKeyFile:               getEnv("TLS_KEY_FILE", "/certs/order-service.key"),
+		TLSCAFile:                getEnv("TLS_CA_FILE", "/certs/ca.crt"),
 	}
 
 	if cfg.DatabaseURL == "" {
