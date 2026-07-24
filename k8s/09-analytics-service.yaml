@@ -17,6 +17,10 @@ spec:
         app.kubernetes.io/name: analytics-service
         app.kubernetes.io/part-of: go-event-platform
     spec:
+      initContainers:
+        - name: wait-for-nats
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z nats 4222; do echo waiting for nats; sleep 2; done"]
       containers:
         - name: analytics-service
           image: analytics-service:local

@@ -17,6 +17,13 @@ spec:
         app.kubernetes.io/name: order-service
         app.kubernetes.io/part-of: go-event-platform
     spec:
+      initContainers:
+        - name: wait-for-order-db
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z order-db 5432; do echo waiting for order-db; sleep 2; done"]
+        - name: wait-for-nats
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z nats 4222; do echo waiting for nats; sleep 2; done"]
       containers:
         - name: order-service
           image: order-service:local

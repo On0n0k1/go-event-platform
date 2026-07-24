@@ -348,6 +348,7 @@ go-event-platform/
 ├── integration/            # end-to-end tests against the real docker-compose stack
 ├── observability/          # prometheus.yml + grafana provisioning (datasources, dashboard)
 ├── certs/                  # generate.sh (checked in) + generated dev mTLS certs (gitignored)
+├── k8s/                    # Kubernetes manifests (see "Running on Kubernetes" below)
 ├── docker-compose.yml
 └── .github/workflows/ci.yml
 ```
@@ -382,6 +383,7 @@ every service has):
 
 - Go 1.26+
 - Docker + Docker Compose
+- kubectl and [kind](https://kind.sigs.k8s.io/) (only needed for [Running on Kubernetes](#running-on-kubernetes))
 
 ## Running locally
 
@@ -473,6 +475,66 @@ go run ./cmd/inventory-service
 (Use `docker compose up inventory-db order-db nats redis jaeger -d` first to get local
 Postgres, NATS, Redis, and Jaeger instances on the ports above.)
 
+## Running on Kubernetes
+
+The manifests in `k8s/` reproduce the same stack as `docker-compose.yml` — same
+services, same env vars, same mTLS setup — targeting a local [kind](https://kind.sigs.k8s.io/)
+cluster. There's no registry involved: images are built locally and loaded straight into
+the cluster's node.
+
+Create the cluster and namespace:
+
+```bash
+kind create cluster --name go-event-platform
+kubectl apply -f k8s/00-namespace.yaml
+```
+
+Build and load every service image (kind can't pull images that only exist in your local
+Docker daemon, so each one has to be explicitly loaded onto the cluster's node):
+
+```bash
+for svc in api-gateway order-service inventory-service notification-service analytics-service; do
+  docker build -t "$svc:local" "./$svc"
+done
+
+kind load docker-image \
+  api-gateway:local order-service:local inventory-service:local \
+  notification-service:local analytics-service:local \
+  --name go-event-platform
+```
+
+Generate the dev mTLS certs (if `./certs/` isn't already populated — see
+[gRPC mTLS](#grpc-mtls)) and load them as Secrets. Unlike the rest of the manifests, TLS
+material is never committed, so this is a script rather than a checked-in Secret YAML:
+
+```bash
+./k8s/generate-secrets.sh
+```
+
+Apply everything else and wait for it to come up:
+
+```bash
+kubectl apply -f k8s/
+kubectl wait --for=condition=Ready pod --all -n go-event-platform --timeout=180s
+```
+
+Reach any service with `kubectl port-forward`, same idea as the compose ports:
+
+```bash
+kubectl port-forward -n go-event-platform svc/api-gateway 8080:8080 &
+curl -X POST -d '{"sku":"SKU-001","quantity":5}' http://localhost:8080/orders
+
+kubectl port-forward -n go-event-platform svc/jaeger 16686:16686 &      # http://localhost:16686
+kubectl port-forward -n go-event-platform svc/grafana 3000:3000 &       # http://localhost:3000
+kubectl port-forward -n go-event-platform svc/prometheus 9090:9090 &    # http://localhost:9090
+```
+
+Tear down:
+
+```bash
+kind delete cluster --name go-event-platform
+```
+
 ## Testing
 
 **Unit tests** (per module, no external dependencies — Postgres/NATS/HTTP calls are
@@ -513,4 +575,4 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
 This is intentionally the simplest slice that demonstrates the architecture end to end.
 Planned evolution, roughly in order:
 
-1. Add Kubernetes manifests/Helm charts alongside the existing Compose setup.
+1. Add an Ingress in front of api-gateway and package `k8s/` as a Helm chart.
