@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/On0n0k1/go-event-platform/order-service/internal/events"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/httpx"
@@ -19,19 +21,14 @@ type InventoryReserver interface {
 	Reserve(ctx context.Context, sku string, quantity int) (inventoryclient.Item, error)
 }
 
-type EventPublisher interface {
-	PublishOrderCreated(ctx context.Context, evt events.OrderCreated) error
-}
-
 type Handler struct {
 	store     Store
 	inventory InventoryReserver
-	events    EventPublisher
 	log       *slog.Logger
 }
 
-func NewHandler(store Store, inventory InventoryReserver, events EventPublisher, log *slog.Logger) *Handler {
-	return &Handler{store: store, inventory: inventory, events: events, log: log}
+func NewHandler(store Store, inventory InventoryReserver, log *slog.Logger) *Handler {
+	return &Handler{store: store, inventory: inventory, log: log}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -80,29 +77,48 @@ func (h *Handler) createOrder(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now().UTC(),
 	}
 
-	if err := h.store.CreateOrder(r.Context(), o); err != nil {
-		h.log.Error("create order failed", "sku", req.SKU, "error", err)
-		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-
-	// Best-effort: the order is already durably persisted above, so a publish
-	// failure here is logged but does not fail the request. A transactional
-	// outbox would close this gap; out of scope for this MVP.
-	evt := events.OrderCreated{
+	evtPayload, err := json.Marshal(events.OrderCreated{
 		OrderID:   o.ID,
 		SKU:       o.SKU,
 		Quantity:  o.Quantity,
 		Status:    o.Status,
 		CreatedAt: o.CreatedAt,
+	})
+	if err != nil {
+		h.log.Error("encode order created event failed", "sku", req.SKU, "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
-	if err := h.events.PublishOrderCreated(r.Context(), evt); err != nil {
-		h.log.Error("publish order created event failed", "order_id", o.ID, "error", err)
+
+	outboxEvt := OutboxEvent{
+		Subject:     events.SubjectCreated,
+		Payload:     evtPayload,
+		TraceParent: traceParent(r.Context()),
+	}
+
+	// The order and its outbox event commit in one transaction: either both
+	// are durably recorded or neither is. A background relay (internal/outbox)
+	// publishes the event afterward, so a NATS outage never risks an order
+	// existing with no event ever queued for it.
+	if err := h.store.CreateOrder(r.Context(), o, outboxEvt); err != nil {
+		h.log.Error("create order failed", "sku", req.SKU, "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+		return
 	}
 
 	ordersCreatedTotal.Inc()
 
 	httpx.WriteJSON(w, http.StatusCreated, o)
+}
+
+// traceParent extracts the W3C traceparent header for the current span, so
+// it can be stored alongside the outbox event and restored by the relay when
+// it eventually publishes -- keeping the event on the same trace as the
+// request that created it, even though publishing happens later.
+func traceParent(ctx context.Context) string {
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	return carrier.Get("traceparent")
 }
 
 func (h *Handler) getOrder(w http.ResponseWriter, r *http.Request) {

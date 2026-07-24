@@ -19,8 +19,11 @@ import (
 	"github.com/On0n0k1/go-event-platform/order-service/internal/inventoryclient"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/metrics"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/order"
+	"github.com/On0n0k1/go-event-platform/order-service/internal/outbox"
 	"github.com/On0n0k1/go-event-platform/order-service/internal/tracing"
 )
+
+const outboxPollInterval = 500 * time.Millisecond
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -74,8 +77,16 @@ func main() {
 	}
 	defer inventory.Close()
 
+	outboxStore := outbox.NewStore(pool)
+	relay := outbox.NewRelay(outboxStore, publisher, logger)
+	relayDone := make(chan struct{})
+	go func() {
+		defer close(relayDone)
+		relay.Run(ctx, outboxPollInterval)
+	}()
+
 	store := order.NewPostgresStore(pool)
-	handler := order.NewHandler(store, inventory, publisher, logger)
+	handler := order.NewHandler(store, inventory, logger)
 
 	mux := http.NewServeMux()
 	handler.Register(mux)
@@ -103,6 +114,10 @@ func main() {
 
 	<-ctx.Done()
 	logger.Info("shutting down order-service")
+
+	// Let the relay finish its current poll before the deferred
+	// publisher/pool.Close() calls run underneath it.
+	<-relayDone
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

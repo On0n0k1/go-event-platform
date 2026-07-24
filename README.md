@@ -53,9 +53,10 @@ foundations.
   to reserve stock before persisting the order; if reservation fails, no order is
   created. That call retries with backoff on connection-level failures (see
   [Retry behavior](#retry-behavior)) rather than failing the request on the first blip.
-  After persisting, it publishes an `OrderCreated` event to NATS JetStream —
-  best-effort, logged on failure but never blocking the response, since the order is
-  already durable in Postgres by that point.
+  The order and its `OrderCreated` event are then written **atomically** in one Postgres
+  transaction via a transactional outbox (see [Transactional outbox](#transactional-outbox))
+  — a background relay publishes it to NATS afterward, so a NATS outage can never cause
+  an order to exist with no event ever queued for it.
 - **inventory-service** owns stock levels and runs two servers: its existing REST API
   (external reads, e.g. the gateway's `GET /items/{sku}`) and a **gRPC** server used only
   for the internal `ReserveStock` call from order-service. Reservation itself is an
@@ -224,6 +225,39 @@ visible as `retry` events on the request's trace span and in `grpc_client_retrie
 as long as it comes back within the budget; if it doesn't, the request still fails
 cleanly with a 502 in a bounded ~5-6s rather than hanging.
 
+### Transactional outbox
+
+Publishing `OrderCreated` used to happen inline in the HTTP handler, right after the
+order was saved — two independent writes (Postgres, then NATS) with no atomicity between
+them. If the NATS publish failed, the order still existed but the event that was
+supposed to announce it was gone for good: the classic **dual-write problem**.
+
+Now `order.PostgresStore.CreateOrder` inserts the order **and** an `outbox_events` row
+in the same DB transaction — both commit together or neither does. A background relay
+(`internal/outbox`, started as a goroutine in `main.go`) polls for unpublished rows every
+500ms, publishes each to NATS, and marks it published; a failed publish just leaves the
+row for the next poll to retry. The order itself no longer depends on NATS being up at
+all.
+
+This introduced a real bug worth calling out: the relay's retries are **at-least-once**
+against an ambiguous failure mode (a timeout doesn't tell you whether the server actually
+stored the message before the ack was lost), so a naive retry-until-success loop can
+publish the same logical event to the stream more than once. Live testing surfaced
+exactly this — one order was delivered to both consumers 5 times after a NATS outage.
+The fix is JetStream's built-in dedup: `Publish` sets a stable `Nats-Msg-Id` header
+(`outbox-<row id>`), and the server silently drops duplicates within its default 2-minute
+window, making the retries safe regardless of how many times they fire.
+
+The relay also restores the trace context that was captured (as a `traceparent` column)
+in the same transaction as the order, so the event it publishes — possibly seconds later,
+on a totally different goroutine — still continues that original request's trace rather
+than starting a disconnected one; see [Tracing](#tracing).
+
+Verified live: creating an order while NATS is fully stopped still returns `201`; the
+event sits unpublished in `outbox_events` until NATS comes back, at which point the relay
+delivers it — exactly once, confirmed via both consumers' logs and Prometheus-independent
+inspection of the table — with no client-visible sign anything was ever wrong.
+
 ### Tracing
 
 Each service has an `internal/tracing` package (identical across services, like
@@ -295,8 +329,9 @@ go-event-platform/
 
 Each service follows the same internal shape (fields vary — e.g. only services with a
 database have `db/`, only order/inventory-service have `proto/`+`inventoryv1/`, only
-inventory-service has `cache/`, only order-service has `retry/`, only services touching
-NATS have `events/`; `tracing/` and `metrics/` are the two packages every service has):
+inventory-service has `cache/`, only order-service has `retry/`+`outbox/`, only services
+touching NATS have `events/`; `tracing/` and `metrics/` are the two packages every
+service has):
 
 ```
 <service>/
@@ -310,6 +345,7 @@ NATS have `events/`; `tracing/` and `metrics/` are the two packages every servic
 │   ├── httpx/               # JSON helpers, logging middleware (+ trace_id), healthz
 │   ├── inventoryv1/          # generated gRPC code (order/inventory-service only)
 │   ├── metrics/              # Prometheus HTTP middleware (+ gRPC interceptors on order/inventory-service)
+│   ├── outbox/                # transactional outbox relay (order-service only)
 │   ├── retry/                 # generic exponential-backoff helper (order-service only)
 │   ├── tracing/              # OTel TracerProvider setup/shutdown (every service)
 │   └── <domain>/            # models, store (+ CachingStore decorator), HTTP/gRPC handlers
@@ -352,6 +388,14 @@ after the read above, and be gone immediately after a reservation:
 ```bash
 docker compose exec redis redis-cli GET item:SKU-001
 docker compose exec redis redis-cli TTL item:SKU-001
+```
+
+Check the outbox directly if you want to see it working — the row should flip to
+published within ~500ms of the order above:
+
+```bash
+docker compose exec order-db psql -U orders -d orders \
+  -c "SELECT id, subject, published_at IS NOT NULL AS published FROM outbox_events ORDER BY id DESC LIMIT 5;"
 ```
 
 Then check the asynchronous side picked it up (notification/analytics services aren't
@@ -410,7 +454,8 @@ done
 
 **Integration test** (boots the real `docker-compose.yml` stack and exercises it over
 real HTTP against real Postgres — requires Docker, gated behind a build tag so it
-doesn't run as part of a normal `go test`):
+doesn't run as part of a normal `go test`; includes a test that stops and restarts the
+`nats` container mid-flow to verify the transactional outbox's durability guarantee):
 
 ```bash
 cd integration && go test -tags=integration -v ./...
@@ -437,7 +482,5 @@ This is intentionally the simplest slice that demonstrates the architecture end 
 Planned evolution, roughly in order:
 
 1. Add Kubernetes manifests/Helm charts alongside the existing Compose setup.
-2. Transactional outbox for order-service's event publish, so a NATS publish failure
-   can't silently diverge from the persisted order (currently best-effort/logged only).
-3. TLS for the gRPC connection between order-service and inventory-service (currently
+2. TLS for the gRPC connection between order-service and inventory-service (currently
    plaintext/insecure credentials, fine for local Compose but not production).

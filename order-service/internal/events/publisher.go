@@ -2,7 +2,6 @@ package events
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -62,16 +61,21 @@ func (p *Publisher) Close() {
 	p.nc.Close()
 }
 
-func (p *Publisher) PublishOrderCreated(ctx context.Context, evt OrderCreated) error {
-	ctx, span := tracer.Start(ctx, "publish "+SubjectCreated, trace.WithSpanKind(trace.SpanKindProducer))
+// Publish sends payload to subject, injecting the current trace context into
+// NATS message headers. msgID is set as the Nats-Msg-Id header, which
+// JetStream uses for server-side deduplication (default 2-minute window):
+// since the outbox relay retries on ambiguous failures (e.g. a timeout where
+// the server may have actually stored the message before the ack was lost),
+// a stable msgID per logical event is what makes those retries safe instead
+// of risking duplicate delivery. Used directly by the relay (which restores
+// a stored trace context before calling this) rather than by request
+// handlers -- see internal/outbox.
+func (p *Publisher) Publish(ctx context.Context, subject string, payload []byte, msgID string) error {
+	ctx, span := tracer.Start(ctx, "publish "+subject, trace.WithSpanKind(trace.SpanKindProducer))
 	defer span.End()
 
-	payload, err := json.Marshal(evt)
-	if err != nil {
-		return fmt.Errorf("encode event: %w", err)
-	}
-
-	msg := &nats.Msg{Subject: SubjectCreated, Data: payload, Header: nats.Header{}}
+	msg := &nats.Msg{Subject: subject, Data: payload, Header: nats.Header{}}
+	msg.Header.Set("Nats-Msg-Id", msgID)
 	otel.GetTextMapPropagator().Inject(ctx, natsHeaderCarrier(msg.Header))
 
 	if _, err := p.js.PublishMsg(ctx, msg); err != nil {

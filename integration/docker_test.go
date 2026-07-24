@@ -211,6 +211,13 @@ func TestOrderFlowInsufficientStockDoesNotReserve(t *testing.T) {
 	}
 }
 
+// settleOutbox waits long enough for the outbox relay's poll interval (500ms
+// in docker-compose.yml) to flush any event still in flight from a prior
+// test, so a "before" stats snapshot isn't taken mid-delivery.
+func settleOutbox() {
+	time.Sleep(1500 * time.Millisecond)
+}
+
 // TestOrderCreatedEventReachesAnalytics confirms the asynchronous path: an
 // order created through the gateway results in an OrderCreated event
 // published to NATS JetStream, consumed independently by analytics-service,
@@ -218,6 +225,7 @@ func TestOrderFlowInsufficientStockDoesNotReserve(t *testing.T) {
 func TestOrderCreatedEventReachesAnalytics(t *testing.T) {
 	waitForHealthy(t, gatewayURL+"/healthz", 60*time.Second)
 	waitForHealthy(t, analyticsURL+"/healthz", 60*time.Second)
+	settleOutbox()
 
 	before := getStats(t)
 
@@ -233,5 +241,65 @@ func TestOrderCreatedEventReachesAnalytics(t *testing.T) {
 			t.Fatalf("analytics stats did not reflect order %s within timeout: before=%+v after=%+v", o.ID, before, after)
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// TestOrderCreatedEventSurvivesNATSOutage exercises the transactional outbox
+// end to end: order-service's DB write (order + outbox event) is independent
+// of NATS, so creating an order still succeeds while NATS is down, and the
+// background relay delivers the event once NATS comes back -- without
+// delivering it more than once, which requires JetStream's Nats-Msg-Id
+// dedup (a naive retry-until-success relay can otherwise double-publish on
+// an ambiguous failure, e.g. a timeout where the server actually received
+// the message before the ack was lost).
+func TestOrderCreatedEventSurvivesNATSOutage(t *testing.T) {
+	waitForHealthy(t, gatewayURL+"/healthz", 60*time.Second)
+	waitForHealthy(t, analyticsURL+"/healthz", 60*time.Second)
+	settleOutbox()
+
+	if out, err := compose("stop", "nats").CombinedOutput(); err != nil {
+		t.Fatalf("docker compose stop nats: %v\n%s", err, out)
+	}
+	t.Cleanup(func() {
+		_, _ = compose("start", "nats").CombinedOutput()
+	})
+
+	before := getStats(t)
+
+	// The DB write (order + outbox event, one transaction) doesn't touch
+	// NATS at all, so this must still succeed with NATS fully down.
+	o := createOrder(t, "SKU-002", 2)
+	if o.Status != "confirmed" {
+		t.Fatalf("order status = %q, want confirmed", o.Status)
+	}
+
+	// Give the relay a few failed poll attempts against the down broker
+	// before restoring it, so this actually exercises retry-then-recover
+	// rather than just a single lucky attempt.
+	time.Sleep(3 * time.Second)
+
+	if out, err := compose("start", "nats").CombinedOutput(); err != nil {
+		t.Fatalf("docker compose start nats: %v\n%s", err, out)
+	}
+	waitForHealthy(t, gatewayURL+"/healthz", 30*time.Second)
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		after := getStats(t)
+		if after.OrdersCount == before.OrdersCount+1 && after.TotalQuantityReserved == before.TotalQuantityReserved+o.Quantity {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("analytics stats did not reflect order %s within timeout: before=%+v after=%+v", o.ID, before, after)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Give any (incorrect) duplicate deliveries a moment to land, then
+	// confirm the count didn't creep past exactly one delivery.
+	time.Sleep(2 * time.Second)
+	final := getStats(t)
+	if final.OrdersCount != before.OrdersCount+1 || final.TotalQuantityReserved != before.TotalQuantityReserved+o.Quantity {
+		t.Fatalf("stats kept changing after the expected delivery -- possible duplicate delivery: before=%+v final=%+v", before, final)
 	}
 }
