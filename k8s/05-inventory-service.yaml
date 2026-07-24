@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-service
+  namespace: go-event-platform
+  labels:
+    app.kubernetes.io/name: inventory-service
+    app.kubernetes.io/part-of: go-event-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: inventory-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: inventory-service
+        app.kubernetes.io/part-of: go-event-platform
+    spec:
+      containers:
+        - name: inventory-service
+          image: inventory-service:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "8081"
+            - name: GRPC_PORT
+              value: "9081"
+            - name: DATABASE_URL
+              value: postgres://inventory:inventory@inventory-db:5432/inventory?sslmode=disable
+            - name: REDIS_ADDR
+              value: redis:6379
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: jaeger:4317
+            - name: TLS_CERT_FILE
+              value: /certs/tls.crt
+            - name: TLS_KEY_FILE
+              value: /certs/tls.key
+            - name: TLS_CA_FILE
+              value: /certs/ca.crt
+          ports:
+            - containerPort: 8081
+              name: http
+            - containerPort: 9081
+              name: grpc
+          volumeMounts:
+            - name: tls
+              mountPath: /certs
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: tls
+          secret:
+            secretName: inventory-service-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory-service
+  namespace: go-event-platform
+  labels:
+    app.kubernetes.io/name: inventory-service
+    app.kubernetes.io/part-of: go-event-platform
+spec:
+  selector:
+    app.kubernetes.io/name: inventory-service
+  ports:
+    - port: 8081
+      targetPort: 8081
+      name: http
+    - port: 9081
+      targetPort: 9081
+      name: grpc
