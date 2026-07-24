@@ -1,0 +1,95 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: go-event-platform
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: go-event-platform
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+
+    scrape_configs:
+      - job_name: api-gateway
+        static_configs:
+          - targets: ["api-gateway:8080"]
+
+      - job_name: order-service
+        static_configs:
+          - targets: ["order-service:8082"]
+
+      - job_name: inventory-service
+        static_configs:
+          - targets: ["inventory-service:8081"]
+
+      - job_name: notification-service
+        static_configs:
+          - targets: ["notification-service:8083"]
+
+      - job_name: analytics-service
+        static_configs:
+          - targets: ["analytics-service:8084"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: go-event-platform
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: go-event-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus
+        app.kubernetes.io/part-of: go-event-platform
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:latest
+          ports:
+            - containerPort: 9090
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+          readinessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: go-event-platform
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: go-event-platform
+spec:
+  selector:
+    app.kubernetes.io/name: prometheus
+  ports:
+    - port: 9090
+      targetPort: 9090
+      name: http
