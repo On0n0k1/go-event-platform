@@ -349,6 +349,7 @@ go-event-platform/
 ├── observability/          # prometheus.yml + grafana provisioning (datasources, dashboard)
 ├── certs/                  # generate.sh (checked in) + generated dev mTLS certs (gitignored)
 ├── k8s/                    # Kubernetes manifests (see "Running on Kubernetes" below)
+├── helm/go-event-platform/ # Helm packaging of the same manifests (see "Packaging as Helm" below)
 ├── kind-config.yaml        # kind cluster config (Ingress host port mapping)
 ├── docker-compose.yml
 └── .github/workflows/ci.yml
@@ -559,6 +560,37 @@ Tear down:
 kind delete cluster --name go-event-platform
 ```
 
+## Packaging as Helm
+
+`helm/go-event-platform/` packages the same resources as `k8s/` into a chart — same
+Deployments/Services/PVCs/Ingress, same `initContainers`, same reliance on
+`generate-secrets.sh` for TLS material (Helm doesn't manage that Secret; it's still
+created out-of-band, same as the raw-manifest path). The one thing templatized is what
+actually needs to vary between installs: each app service's image repository/tag/pull
+policy (`values.yaml`) and whether/how the Ingress is exposed. Everything else — env
+vars, ports, probes, the Prometheus/Grafana config — is identical to `k8s/` on purpose;
+this chart is packaging, not a redesign.
+
+Given a cluster already set up per [Running on Kubernetes](#running-on-kubernetes)
+(namespace, ingress-nginx, images loaded, TLS secrets generated), install with:
+
+```bash
+helm install go-event-platform helm/go-event-platform --namespace go-event-platform --create-namespace
+```
+
+Upgrade after rebuilding an image (`kind load docker-image` first, same as the raw
+manifest path):
+
+```bash
+helm upgrade go-event-platform helm/go-event-platform --namespace go-event-platform
+```
+
+Uninstall:
+
+```bash
+helm uninstall go-event-platform --namespace go-event-platform
+```
+
 ## Testing
 
 **Unit tests** (per module, no external dependencies — Postgres/NATS/HTTP calls are
@@ -596,7 +628,9 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR to `main`:
 
 ## Roadmap
 
-This is intentionally the simplest slice that demonstrates the architecture end to end.
-Planned evolution, roughly in order:
-
-1. Package `k8s/` as a Helm chart.
+This was intentionally built as the simplest slice that demonstrates the architecture
+end to end, then evolved incrementally. That plan is now complete: REST+gRPC sync
+communication, NATS async messaging with a transactional outbox, Postgres+Redis storage,
+mTLS between order-service and inventory-service, full observability (structured
+logging, Prometheus metrics, OTel tracing, Grafana dashboards), and deployment via both
+Docker Compose and Kubernetes (raw manifests, Ingress, and a Helm chart).

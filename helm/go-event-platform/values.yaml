@@ -1,0 +1,28 @@
+# Locally built images, loaded into the cluster via `kind load docker-image`
+# (see the README's "Running on Kubernetes" section) -- there's no registry
+# involved, same as the raw k8s/ manifests this chart packages.
+images:
+  apiGateway:
+    repository: api-gateway
+    tag: local
+    pullPolicy: IfNotPresent
+  orderService:
+    repository: order-service
+    tag: local
+    pullPolicy: IfNotPresent
+  inventoryService:
+    repository: inventory-service
+    tag: local
+    pullPolicy: IfNotPresent
+  notificationService:
+    repository: notification-service
+    tag: local
+    pullPolicy: IfNotPresent
+  analyticsService:
+    repository: analytics-service
+    tag: local
+    pullPolicy: IfNotPresent
+
+ingress:
+  enabled: true
+  className: nginx
