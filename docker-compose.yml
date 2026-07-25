@@ -217,6 +217,7 @@ services:
       PORT: "8080"
       ORDER_SERVICE_URL: http://order-service:8082
       INVENTORY_SERVICE_URL: http://inventory-service:8081
+      ANALYTICS_SERVICE_URL: http://analytics-service:8084
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
     ports:
       - "8080:8080"
@@ -224,6 +225,8 @@ services:
       order-service:
         condition: service_healthy
       inventory-service:
+        condition: service_healthy
+      analytics-service:
         condition: service_healthy
       jaeger:
         condition: service_healthy

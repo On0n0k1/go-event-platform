@@ -108,11 +108,21 @@ and beyond) on top of these foundations.
 
 | Method | Path            | Proxies to          |
 |--------|-----------------|----------------------|
+| GET    | `/`             | (embedded static UI -- see below) |
 | GET    | `/healthz`      | (local liveness)     |
 | GET    | `/metrics`      | (local Prometheus metrics) |
 | POST   | `/orders`       | order-service        |
 | GET    | `/orders/{id}`  | order-service        |
 | GET    | `/items/{sku}`  | inventory-service     |
+| GET    | `/stats`        | analytics-service     |
+
+`GET /` serves a minimal, dependency-free HTML/JS page (`api-gateway/cmd/api-gateway/web/`,
+embedded into the binary via `go:embed`) for checking stock, placing orders, looking
+orders back up, and watching analytics-service's live stats -- the same operations shown
+in [Running locally](#running-locally) below, just clickable instead of curl. It's
+same-origin with the API it calls, so no CORS setup is needed; open
+http://localhost:8080 (compose) or http://localhost:8090 (Kubernetes Ingress) in a
+browser.
 
 ### order-service
 
@@ -365,6 +375,7 @@ every service has):
 <service>/
 ├── proto/inventoryv1/inventory.proto   # gRPC contract source (order/inventory-service only)
 ├── cmd/<service>/main.go   # wiring, graceful shutdown, lifecycle
+├── cmd/api-gateway/web/    # embedded static UI (api-gateway only, see "api-gateway" above)
 ├── internal/
 │   ├── cache/               # Redis client helper (inventory-service only)
 │   ├── config/             # env-var configuration
@@ -397,7 +408,9 @@ all five services) runs with one command — this also generates the dev mTLS ce
 docker compose up --build
 ```
 
-Once healthy, exercise the synchronous path through the gateway:
+Once healthy, open http://localhost:8080 for a minimal browser UI (check stock, place
+orders, watch stats update live), or exercise the same synchronous path through the
+gateway with curl:
 
 ```bash
 # check stock

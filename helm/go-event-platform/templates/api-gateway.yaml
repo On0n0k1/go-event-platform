@@ -30,6 +30,8 @@ spec:
               value: http://order-service:8082
             - name: INVENTORY_SERVICE_URL
               value: http://inventory-service:8081
+            - name: ANALYTICS_SERVICE_URL
+              value: http://analytics-service:8084
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: jaeger:4317
           ports:

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"embed"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,6 +20,9 @@ import (
 	"github.com/On0n0k1/go-event-platform/api-gateway/internal/proxy"
 	"github.com/On0n0k1/go-event-platform/api-gateway/internal/tracing"
 )
+
+//go:embed web
+var webFS embed.FS
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -53,12 +58,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	analyticsProxy, err := proxy.NewReverseProxy(cfg.AnalyticsServiceURL, logger)
+	if err != nil {
+		logger.Error("failed to configure analytics-service proxy", "error", err)
+		os.Exit(1)
+	}
+
+	webRoot, err := fs.Sub(webFS, "web")
+	if err != nil {
+		logger.Error("failed to load embedded web assets", "error", err)
+		os.Exit(1)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", httpx.HealthHandler)
 	mux.Handle("GET /metrics", metrics.Handler())
 	mux.Handle("POST /orders", orderProxy)
 	mux.Handle("GET /orders/{id}", orderProxy)
 	mux.Handle("GET /items/{sku}", inventoryProxy)
+	mux.Handle("GET /stats", analyticsProxy)
+	mux.Handle("/", http.FileServerFS(webRoot))
 
 	tracedHandler := otelhttp.NewHandler(httpx.LoggingMiddleware(logger)(metrics.HTTPMiddleware(mux)), "api-gateway",
 		otelhttp.WithFilter(func(r *http.Request) bool {
@@ -76,6 +95,7 @@ func main() {
 			"port", cfg.Port,
 			"order_service_url", cfg.OrderServiceURL,
 			"inventory_service_url", cfg.InventoryServiceURL,
+			"analytics_service_url", cfg.AnalyticsServiceURL,
 		)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server error", "error", err)

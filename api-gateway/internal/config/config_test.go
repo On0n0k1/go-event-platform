@@ -7,6 +7,7 @@ func TestLoad(t *testing.T) {
 		t.Setenv("PORT", "")
 		t.Setenv("ORDER_SERVICE_URL", "")
 		t.Setenv("INVENTORY_SERVICE_URL", "")
+		t.Setenv("ANALYTICS_SERVICE_URL", "")
 
 		cfg := Load()
 
@@ -19,12 +20,16 @@ func TestLoad(t *testing.T) {
 		if cfg.InventoryServiceURL != "http://localhost:8081" {
 			t.Errorf("InventoryServiceURL = %q, want default", cfg.InventoryServiceURL)
 		}
+		if cfg.AnalyticsServiceURL != "http://localhost:8084" {
+			t.Errorf("AnalyticsServiceURL = %q, want default", cfg.AnalyticsServiceURL)
+		}
 	})
 
 	t.Run("overrides", func(t *testing.T) {
 		t.Setenv("PORT", "9090")
 		t.Setenv("ORDER_SERVICE_URL", "http://order-service:8082")
 		t.Setenv("INVENTORY_SERVICE_URL", "http://inventory-service:8081")
+		t.Setenv("ANALYTICS_SERVICE_URL", "http://analytics-service:8084")
 
 		cfg := Load()
 
@@ -36,6 +41,9 @@ func TestLoad(t *testing.T) {
 		}
 		if cfg.InventoryServiceURL != "http://inventory-service:8081" {
 			t.Errorf("InventoryServiceURL = %q, want override", cfg.InventoryServiceURL)
+		}
+		if cfg.AnalyticsServiceURL != "http://analytics-service:8084" {
+			t.Errorf("AnalyticsServiceURL = %q, want override", cfg.AnalyticsServiceURL)
 		}
 	})
 }

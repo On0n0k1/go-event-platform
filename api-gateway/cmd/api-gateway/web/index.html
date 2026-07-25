@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>go-event-platform</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    max-width: 760px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+    line-height: 1.5;
+  }
+  h1 { font-size: 1.25rem; }
+  h2 { font-size: 1rem; margin-top: 2rem; }
+  section {
+    border: 1px solid light-dark(#ccc, #444);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+  }
+  label { display: inline-block; min-width: 6rem; }
+  input {
+    font: inherit;
+    padding: 0.25rem 0.5rem;
+    margin: 0.25rem 0;
+    width: 10rem;
+  }
+  button {
+    font: inherit;
+    padding: 0.35rem 0.9rem;
+    margin-left: 0.5rem;
+    cursor: pointer;
+  }
+  pre {
+    background: light-dark(#f4f4f4, #222);
+    padding: 0.75rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-height: 1.2em;
+  }
+  .stats { display: flex; gap: 2rem; }
+  .stat { text-align: center; }
+  .stat .value { font-size: 1.75rem; font-weight: bold; }
+  .stat .label { font-size: 0.8rem; opacity: 0.7; }
+  .row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.25rem; }
+</style>
+</head>
+<body>
+  <h1>go-event-platform</h1>
+  <p>Minimal UI over the same REST API you'd hit with curl -- see the
+  <a href="https://github.com/On0n0k1/go-event-platform">README</a> for the architecture
+  behind it.</p>
+
+  <section>
+    <h2>Check stock</h2>
+    <div class="row">
+      <label for="stock-sku">SKU</label>
+      <input id="stock-sku" value="SKU-001">
+      <button id="stock-btn">Check</button>
+    </div>
+    <pre id="stock-out"></pre>
+  </section>
+
+  <section>
+    <h2>Place an order</h2>
+    <div class="row">
+      <label for="order-sku">SKU</label>
+      <input id="order-sku" value="SKU-001">
+    </div>
+    <div class="row">
+      <label for="order-qty">Quantity</label>
+      <input id="order-qty" type="number" min="1" value="1">
+      <button id="order-btn">Place order</button>
+    </div>
+    <pre id="order-out"></pre>
+  </section>
+
+  <section>
+    <h2>Look up an order</h2>
+    <div class="row">
+      <label for="lookup-id">Order ID</label>
+      <input id="lookup-id" placeholder="filled in after placing an order" style="width: 20rem;">
+      <button id="lookup-btn">Fetch</button>
+    </div>
+    <pre id="lookup-out"></pre>
+  </section>
+
+  <section>
+    <h2>Live stats <small>(analytics-service, via NATS)</small></h2>
+    <div class="stats">
+      <div class="stat"><div class="value" id="stat-orders">-</div><div class="label">orders</div></div>
+      <div class="stat"><div class="value" id="stat-qty">-</div><div class="label">units reserved</div></div>
+    </div>
+  </section>
+
+<script>
+async function callAPI(el, method, path, body) {
+  el.textContent = "...";
+  try {
+    const res = await fetch(path, {
+      method,
+      headers: body ? { "content-type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await res.text();
+    let pretty = text;
+    try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch {}
+    el.textContent = `HTTP ${res.status}\n${pretty}`;
+    return res.ok ? JSON.parse(text) : null;
+  } catch (err) {
+    el.textContent = `request failed: ${err}`;
+    return null;
+  }
+}
+
+document.getElementById("stock-btn").addEventListener("click", () => {
+  const sku = document.getElementById("stock-sku").value.trim();
+  callAPI(document.getElementById("stock-out"), "GET", `/items/${encodeURIComponent(sku)}`);
+});
+
+document.getElementById("order-btn").addEventListener("click", async () => {
+  const sku = document.getElementById("order-sku").value.trim();
+  const quantity = parseInt(document.getElementById("order-qty").value, 10);
+  const out = document.getElementById("order-out");
+  const order = await callAPI(out, "POST", "/orders", { sku, quantity });
+  if (order && order.id) {
+    document.getElementById("lookup-id").value = order.id;
+  }
+});
+
+document.getElementById("lookup-btn").addEventListener("click", () => {
+  const id = document.getElementById("lookup-id").value.trim();
+  callAPI(document.getElementById("lookup-out"), "GET", `/orders/${encodeURIComponent(id)}`);
+});
+
+async function refreshStats() {
+  try {
+    const res = await fetch("/stats");
+    if (!res.ok) return;
+    const stats = await res.json();
+    document.getElementById("stat-orders").textContent = stats.orders_count ?? "-";
+    document.getElementById("stat-qty").textContent = stats.total_quantity_reserved ?? "-";
+  } catch {}
+}
+refreshStats();
+setInterval(refreshStats, 3000);
+</script>
+</body>
+</html>
