@@ -75,6 +75,37 @@ func TestCachingStoreReserveStockInvalidatesCache(t *testing.T) {
 	}
 }
 
+func TestCachingStoreRestockItemInvalidatesCache(t *testing.T) {
+	quantity := 10
+	underlying := &stubStore{
+		getItemFunc: func(ctx context.Context, sku string) (Item, error) {
+			return Item{SKU: sku, Name: "Widget", Quantity: quantity}, nil
+		},
+		restockItemFunc: func(ctx context.Context, sku string, q int) (Item, error) {
+			quantity += q
+			return Item{SKU: sku, Name: "Widget", Quantity: quantity}, nil
+		},
+	}
+	store := newTestCachingStore(t, underlying)
+
+	item, err := store.GetItem(context.Background(), "SKU-001")
+	if err != nil || item.Quantity != 10 {
+		t.Fatalf("GetItem = %+v, %v", item, err)
+	}
+
+	if _, err := store.RestockItem(context.Background(), "SKU-001", 5); err != nil {
+		t.Fatalf("RestockItem: %v", err)
+	}
+
+	item, err = store.GetItem(context.Background(), "SKU-001")
+	if err != nil {
+		t.Fatalf("GetItem after restock: %v", err)
+	}
+	if item.Quantity != 15 {
+		t.Fatalf("quantity after restock = %d, want 15 (cache should have been invalidated)", item.Quantity)
+	}
+}
+
 func TestCachingStoreGetItemErrorIsNotCached(t *testing.T) {
 	underlying := &stubStore{
 		getItemFunc: func(ctx context.Context, sku string) (Item, error) {

@@ -113,6 +113,21 @@ func postOrder(t *testing.T, sku string, quantity int) *http.Response {
 	return resp
 }
 
+func postRestock(t *testing.T, sku string, quantity int) *http.Response {
+	t.Helper()
+
+	body, err := json.Marshal(map[string]any{"quantity": quantity})
+	if err != nil {
+		t.Fatalf("encode restock request: %v", err)
+	}
+
+	resp, err := http.Post(gatewayURL+"/items/"+sku+"/restock", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("restock request: %v", err)
+	}
+	return resp
+}
+
 func createOrder(t *testing.T, sku string, quantity int) order {
 	t.Helper()
 
@@ -208,6 +223,45 @@ func TestOrderFlowInsufficientStockDoesNotReserve(t *testing.T) {
 	after := getItem(t, "SKU-002")
 	if after.Quantity != before.Quantity {
 		t.Fatalf("stock changed after rejected order: before=%d after=%d", before.Quantity, after.Quantity)
+	}
+}
+
+// TestRestockIncreasesStock confirms restock's effect is visible through the
+// same cache-aside read path as everything else -- GetItem is read again
+// right after, so a stale cache entry would make this fail even though the
+// write itself succeeded.
+func TestRestockIncreasesStock(t *testing.T) {
+	waitForHealthy(t, gatewayURL+"/healthz", 60*time.Second)
+
+	before := getItem(t, "SKU-001")
+
+	resp := postRestock(t, "SKU-001", 7)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("restock status = %d, want 200", resp.StatusCode)
+	}
+
+	var restocked item
+	if err := json.NewDecoder(resp.Body).Decode(&restocked); err != nil {
+		t.Fatalf("decode restock response: %v", err)
+	}
+	if restocked.Quantity != before.Quantity+7 {
+		t.Fatalf("restock response quantity = %d, want %d", restocked.Quantity, before.Quantity+7)
+	}
+
+	after := getItem(t, "SKU-001")
+	if after.Quantity != before.Quantity+7 {
+		t.Fatalf("stock after restock = %d, want %d", after.Quantity, before.Quantity+7)
+	}
+}
+
+func TestRestockRejectsNonPositiveQuantity(t *testing.T) {
+	waitForHealthy(t, gatewayURL+"/healthz", 60*time.Second)
+
+	resp := postRestock(t, "SKU-001", 0)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("restock status = %d, want 400", resp.StatusCode)
 	}
 }
 

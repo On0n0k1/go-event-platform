@@ -18,10 +18,11 @@ var cacheResultTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 }, []string{"result"})
 
 // CachingStore wraps Store with a cache-aside layer over GetItem. Reads that
-// hit the cache skip Postgres entirely; ReserveStock always invalidates the
-// entry afterward rather than trusting its own write, so stock is never
-// served stale. Any Redis error is treated as a cache miss -- Postgres stays
-// the source of truth and the request never fails because of the cache.
+// hit the cache skip Postgres entirely; ReserveStock and RestockItem always
+// invalidate the entry afterward rather than trusting their own write, so
+// stock is never served stale. Any Redis error is treated as a cache miss --
+// Postgres stays the source of truth and the request never fails because of
+// the cache.
 type CachingStore struct {
 	next  Store
 	redis *redis.Client
@@ -60,6 +61,17 @@ func (s *CachingStore) GetItem(ctx context.Context, sku string) (Item, error) {
 
 func (s *CachingStore) ReserveStock(ctx context.Context, sku string, quantity int) (Item, error) {
 	item, err := s.next.ReserveStock(ctx, sku, quantity)
+	if err != nil {
+		return Item{}, err
+	}
+
+	s.redis.Del(ctx, cacheKey(sku))
+
+	return item, nil
+}
+
+func (s *CachingStore) RestockItem(ctx context.Context, sku string, quantity int) (Item, error) {
+	item, err := s.next.RestockItem(ctx, sku, quantity)
 	if err != nil {
 		return Item{}, err
 	}

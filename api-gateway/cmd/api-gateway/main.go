@@ -76,6 +76,7 @@ func main() {
 	mux.Handle("POST /orders", orderProxy)
 	mux.Handle("GET /orders/{id}", orderProxy)
 	mux.Handle("GET /items/{sku}", inventoryProxy)
+	mux.Handle("POST /items/{sku}/restock", inventoryProxy)
 	mux.Handle("GET /stats", analyticsProxy)
 	mux.Handle("/", http.FileServerFS(webRoot))
 

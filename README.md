@@ -114,6 +114,7 @@ and beyond) on top of these foundations.
 | POST   | `/orders`       | order-service        |
 | GET    | `/orders/{id}`  | order-service        |
 | GET    | `/items/{sku}`  | inventory-service     |
+| POST   | `/items/{sku}/restock` | inventory-service |
 | GET    | `/stats`        | analytics-service     |
 
 `GET /` serves a minimal, dependency-free HTML/JS page (`api-gateway/cmd/api-gateway/web/`,
@@ -142,6 +143,7 @@ REST (port 8081, external reads):
 | GET    | `/healthz`      | Liveness + DB connectivity check       |
 | GET    | `/metrics`      | Prometheus metrics                      |
 | GET    | `/items/{sku}`  | Fetch current stock for a SKU (Redis cache-aside, 30s TTL) |
+| POST   | `/items/{sku}/restock` | `{quantity}` (must be positive) → atomically increments stock, invalidating the cache entry same as a reservation |
 
 gRPC (port 9081, internal only — see `proto/inventoryv1/inventory.proto`):
 
@@ -339,7 +341,8 @@ Prometheus and Jaeger already added as datasources and a dashboard already loade
 (`observability/grafana/`, provisioned via mounted volumes — nothing to click through
 manually). Open http://localhost:3000 (anonymous access enabled, no login) for request
 rate/error-rate/p95-latency per service, gRPC request rate, orders-created rate, stock
-reservation failures by reason, and the inventory cache hit ratio.
+reservation failures by reason, the inventory cache hit ratio, and restock rate
+(`items_restocked_total`).
 
 ## Repo layout
 
@@ -610,11 +613,19 @@ helm install go-event-platform helm/go-event-platform --namespace go-event-platf
 ```
 
 Upgrade after rebuilding an image (`kind load docker-image` first, same as the raw
-manifest path):
+manifest path). Since the image tag (`:local`) doesn't change, `helm upgrade` sees no
+diff in the Deployment spec and won't restart anything on its own -- follow it with a
+`rollout restart` for whichever services you rebuilt:
 
 ```bash
 helm upgrade go-event-platform helm/go-event-platform --namespace go-event-platform
+kubectl rollout restart deployment/api-gateway deployment/order-service \
+  deployment/inventory-service deployment/notification-service deployment/analytics-service \
+  -n go-event-platform
 ```
+
+(The same applies to the raw-manifest path — `kubectl apply -f k8s/` alone won't pick up
+a rebuilt image under an unchanged tag either.)
 
 Uninstall:
 

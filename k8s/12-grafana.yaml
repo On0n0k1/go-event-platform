@@ -137,6 +137,18 @@ data:
               "legendFormat": "hit ratio"
             }
           ]
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Restock rate",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+          "targets": [
+            {
+              "expr": "rate(items_restocked_total[1m])",
+              "legendFormat": "restocks/sec"
+            }
+          ]
         }
       ]
     }

@@ -1,6 +1,7 @@
 package inventory
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,7 @@ func NewHandler(store Store, log *slog.Logger) *Handler {
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /items/{sku}", h.getItem)
+	mux.HandleFunc("POST /items/{sku}/restock", h.restockItem)
 }
 
 func (h *Handler) getItem(w http.ResponseWriter, r *http.Request) {
@@ -35,5 +37,37 @@ func (h *Handler) getItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	httpx.WriteJSON(w, http.StatusOK, item)
+}
+
+type restockRequest struct {
+	Quantity int `json:"quantity"`
+}
+
+func (h *Handler) restockItem(w http.ResponseWriter, r *http.Request) {
+	sku := r.PathValue("sku")
+
+	var req restockRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Quantity <= 0 {
+		httpx.WriteError(w, http.StatusBadRequest, "quantity must be positive")
+		return
+	}
+
+	item, err := h.store.RestockItem(r.Context(), sku, req.Quantity)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		httpx.WriteError(w, http.StatusNotFound, "item not found")
+		return
+	case err != nil:
+		h.log.Error("restock item failed", "sku", sku, "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	itemsRestockedTotal.Inc()
 	httpx.WriteJSON(w, http.StatusOK, item)
 }

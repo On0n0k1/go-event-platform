@@ -51,12 +51,36 @@ up() {
 	echo "==> generating TLS secrets"
 	"$REPO_ROOT/k8s/generate-secrets.sh"
 
+	release_existed=false
+	if helm status "$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1; then
+		release_existed=true
+	fi
+
 	echo "==> deploying via helm"
 	helm upgrade --install "$RELEASE" "$REPO_ROOT/helm/go-event-platform" \
 		--namespace "$NAMESPACE" --create-namespace
 
-	echo "==> waiting for pods"
-	kubectl wait --for=condition=Ready pod --all -n "$NAMESPACE" --timeout=180s
+	# The image tag (:local) never changes, so on a rerun against an already
+	# -existing release, helm sees no Deployment spec diff for the app
+	# services and won't restart them -- force it, so a rebuilt image
+	# actually takes effect. Skipped on a brand new install: restarting a
+	# Deployment whose first-ever rollout hasn't finished yet races the wait
+	# below. Only the 5 app services (built from local Dockerfiles above),
+	# not the infra deployments, which don't get rebuilt between reruns.
+	if [ "$release_existed" = true ]; then
+		echo "==> restarting app deployments to pick up any rebuilt images"
+		# shellcheck disable=SC2086
+		kubectl rollout restart $(for svc in $services; do printf 'deployment/%s ' "$svc"; done) -n "$NAMESPACE"
+	fi
+
+	# Deployment-name-scoped rollout status, not `kubectl wait pod --all`:
+	# the latter snapshots pod *names* up front, which races pods being
+	# replaced by the restart above (the old name 404s mid-wait instead of
+	# being tracked through to its replacement).
+	echo "==> waiting for rollouts"
+	for dep in $(kubectl get deployments -n "$NAMESPACE" -o name); do
+		kubectl rollout status "$dep" -n "$NAMESPACE" --timeout=180s
+	done
 
 	echo
 	echo "Up. Open http://localhost:8090"
