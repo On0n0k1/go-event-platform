@@ -71,6 +71,13 @@ spec:
               value: Admin
             - name: GF_AUTH_DISABLE_LOGIN_FORM
               value: "true"
+            # Served under /grafana via the Ingress (templates/ingress.yaml) rather than
+            # at its own root, so Grafana needs to know its externally-visible base path
+            # -- otherwise its own static assets/API calls resolve to the wrong URLs.
+            - name: GF_SERVER_ROOT_URL
+              value: {{ .Values.ingress.grafanaRootURL | quote }}
+            - name: GF_SERVER_SERVE_FROM_SUB_PATH
+              value: "true"
           ports:
             - containerPort: 3000
               name: http

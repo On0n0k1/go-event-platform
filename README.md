@@ -497,6 +497,20 @@ services, same env vars, same mTLS setup — targeting a local [kind](https://ki
 cluster. There's no registry involved: images are built locally and loaded straight into
 the cluster's node.
 
+`k8s/run.sh` wraps cluster setup (kind, ingress-nginx, image build/load, TLS secrets)
+plus deploying via the [Helm chart](#packaging-as-helm) into two commands:
+
+```bash
+k8s/run.sh up      # create the cluster and deploy everything
+k8s/run.sh down    # uninstall the release and delete the cluster
+```
+
+It's idempotent — rerunning `up` reuses an existing cluster and does `helm upgrade
+--install` rather than failing. Everything up through TLS secrets below is exactly what
+it runs, spelled out for when you want to do a piece by hand (e.g. after changing one
+manifest) or use the raw `kubectl apply -f k8s/` path instead of Helm, as the last step
+shows.
+
 Create the cluster and namespace. `kind-config.yaml` maps host ports 8090/8443 to the
 node (adjust if those are free/taken differently on your machine — 80/443 are the kind
 defaults, but are often already bound locally) and labels the node `ingress-ready` so
@@ -548,22 +562,26 @@ kubectl apply -f k8s/
 kubectl wait --for=condition=Ready pod --all -n go-event-platform --timeout=180s
 ```
 
-api-gateway is reachable straight from the host through the Ingress, no port-forward
-needed — this is the one service meant for external traffic, same role the `8080:8080`
-port mapping plays in compose:
+api-gateway and Grafana are reachable straight from the host through the Ingress, no
+port-forward needed — the same role the `8080:8080` and `3000:3000` port mappings play
+in compose:
 
 ```bash
 curl http://localhost:8090/items/SKU-001
 curl -X POST -d '{"sku":"SKU-001","quantity":5}' http://localhost:8090/orders
 ```
 
+Open http://localhost:8090/grafana/ for the "go-event-platform overview" dashboard (no
+login needed). Grafana is configured with `GF_SERVER_ROOT_URL`/`GF_SERVER_SERVE_FROM_SUB_PATH`
+to serve correctly under that `/grafana` prefix instead of its own root — if you change
+`kind-config.yaml`'s host port, update `GF_SERVER_ROOT_URL` (or `ingress.grafanaRootURL`
+in the Helm chart's `values.yaml`) to match.
+
 Everything else stays internal-only, same as compose not publishing notification-service
-or the observability UIs anywhere but the ports it exposes — reach those with
-`kubectl port-forward`:
+anywhere but its own port — reach Jaeger and Prometheus with `kubectl port-forward`:
 
 ```bash
 kubectl port-forward -n go-event-platform svc/jaeger 16686:16686 &      # http://localhost:16686
-kubectl port-forward -n go-event-platform svc/grafana 3000:3000 &       # http://localhost:3000
 kubectl port-forward -n go-event-platform svc/prometheus 9090:9090 &    # http://localhost:9090
 ```
 

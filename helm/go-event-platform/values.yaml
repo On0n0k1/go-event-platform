@@ -26,3 +26,6 @@ images:
 ingress:
   enabled: true
   className: nginx
+  # Grafana is served under /grafana on the same Ingress; it needs to know its
+  # externally-visible URL to resolve its own static assets/API calls correctly.
+  grafanaRootURL: http://localhost:8090/grafana/
